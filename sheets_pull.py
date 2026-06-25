@@ -6,7 +6,7 @@ stuck/over-budget/no-answer deal lists. No external deps (stdlib only).
 Importable: `from sheets_pull import pull_sheets` -> dict.
 CLI: `python3 sheets_pull.py` prints the snapshot JSON.
 """
-import os, csv, io, json, collections, datetime, re, subprocess
+import os, csv, io, json, collections, datetime, re, subprocess, unicodedata
 
 SHEETS = {
     "designy_leads": "1VwE90ugoXTI4_90tKXzo7PT2TXpXYxyci0Ml3g9rrqs",
@@ -192,6 +192,29 @@ def analyze_tracker(rows):
 
     out["no_answer_after_offer"] = status_list("NO ANSWER AFTER OFFER")
     out["over_budget"] = status_list("OVER BUDGET")
+
+    # Per-client detail (with the furthest funnel stage reached) for correlating
+    # lead names against the tracker the sales team keeps post-measurement.
+    stage_order = [("ORDER", oi), ("CONTRACTED", ci),
+                   ("PRESENTATION SENT ON EXT", idx("PRESENTATION SENT ON EXT")),
+                   ("RHINO PRESENTATION", idx("RHINO PRESENTATION")),
+                   ("OFFER", idx("OFFER")), ("SESSION", idx("SESSION"))]
+
+    def stage_of(r):
+        for name, i in stage_order:
+            if i is not None and len(r) > i and r[i].strip().upper() == "TRUE":
+                return name
+        return ""
+
+    clients_detail = []
+    for r in data:
+        if cl is None or len(r) <= cl or not r[cl].strip():
+            continue
+        rec = deal(r)
+        rec["status"] = (r[si].strip() if si is not None and len(r) > si else "")
+        rec["stage"] = stage_of(r)
+        clients_detail.append(rec)
+    out["clients_detail"] = clients_detail
     return out
 
 
@@ -340,6 +363,14 @@ def analyze_ahd_leads(rows, gid_note=""):
         "days_ago": l["days_ago"], "why": l["why"],
     } for l in pool[:12]]
     out["recent_window"] = bool(recent)
+    # Compact full list, used to correlate lead names against the sales tracker.
+    out["leads_detail"] = [{
+        "name": l["full_name"], "phone": l["phone"], "date": l["date"],
+        "days_ago": l["days_ago"], "campaign": l["campaign_name"],
+        "interest": l["interest"], "when": l["when_planning"],
+        "compound": l["compound"], "platform": l["platform"],
+        "tier": l["tier"], "score": l["score"],
+    } for l in leads]
     return out
 
 
@@ -411,6 +442,74 @@ def pull_cash_in():
     return out
 
 
+# ---- Lead ↔ tracker name correlation (close the marketing→sales loop) ----
+# The sales team logs every client in the tracker AFTER a measurement/session, so
+# matching a Facebook lead's name to a tracker client tells us which ad leads
+# actually progressed — and where each one now stands.
+_NAME_TITLES = {"dr", "eng", "mr", "mrs", "ms", "prof", "engineer", "arch", "m"}
+# Ultra-common Egyptian name particles/first-names — too generic to confirm a
+# match on their own, so they don't count as the "distinctive" shared token.
+_NAME_COMMON = {"el", "al", "abd", "abdel", "abdul", "abo", "abou", "mohamed",
+                "mohammed", "mohamad", "ahmed", "mahmoud", "ali"}
+
+
+def _name_tokens(s):
+    s = (s or "").replace("\xa0", " ")
+    s = unicodedata.normalize("NFKD", s).lower()
+    s = re.sub(r"[^a-z؀-ۿ\s]", " ", s)  # keep latin + arabic letters
+    return [t for t in s.split() if t and t not in _NAME_TITLES]
+
+
+def _name_match(a, b):
+    """Conservative full-name match: identical token sets, OR same first name
+    plus at least one distinctive (non-common) shared token (surname). Tuned to
+    avoid false positives from shared common first names / family surnames."""
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    if ta == tb:
+        return True
+    if ta[0] != tb[0]:
+        return False
+    distinct = (set(ta) & set(tb)) - _NAME_COMMON - {ta[0]}
+    return len(distinct) >= 1
+
+
+def correlate_leads_tracker(leads_detail, clients_detail):
+    """Match scored leads to tracker clients by name. Returns one record per
+    matched lead with both the marketing side (campaign, tier, interest, when)
+    and the current sales side (status, stage, amount, rep)."""
+    if not leads_detail or not clients_detail:
+        return []
+    # Pre-tokenize clients once (the inner loop runs leads × clients).
+    ct = [(c, _name_tokens(c.get("client", ""))) for c in clients_detail]
+    out = []
+    for l in leads_detail:
+        lt = _name_tokens(l.get("name", ""))
+        if len(lt) < 2:            # need at least first+last to match safely
+            continue
+        for c, ctok in ct:
+            if not ctok:
+                continue
+            if lt == ctok or (lt[0] == ctok[0]
+                              and (set(lt) & set(ctok)) - _NAME_COMMON - {lt[0]}):
+                out.append({
+                    "name": l.get("name"), "phone": l.get("phone"),
+                    "tier": l.get("tier"), "interest": l.get("interest"),
+                    "when": l.get("when"), "compound": l.get("compound"),
+                    "campaign": l.get("campaign"), "lead_date": l.get("date"),
+                    "lead_days_ago": l.get("days_ago"),
+                    "client": c.get("client"), "status": c.get("status") or "",
+                    "stage": c.get("stage") or "", "amount": c.get("amount") or "",
+                    "rep": c.get("rep") or "",
+                })
+                break
+    # Most recently-generated leads first.
+    out.sort(key=lambda d: (d["lead_days_ago"] is None,
+                            d["lead_days_ago"] if d["lead_days_ago"] is not None else 0))
+    return out
+
+
 def pull_sheets():
     snap = {"pulled_at": datetime.datetime.now().isoformat(timespec="seconds")}
     snap["designy_leads"] = analyze_leads(fetch(SHEETS["designy_leads"]))
@@ -419,6 +518,13 @@ def pull_sheets():
     snap["ahd_leads"] = analyze_ahd_leads(fetch(SHEETS["outdoor_leads"], AHD_LEADS_GID))
     # Default sheet matches the tracker tab the prior session validated (header on row 2).
     snap["ahd_tracker"] = analyze_tracker(fetch(SHEETS["ahd_tracker"]))
+    # Close the loop: which Facebook leads are now clients in the sales tracker.
+    snap["lead_journey"] = correlate_leads_tracker(
+        snap["ahd_leads"].get("leads_detail", []),
+        snap["ahd_tracker"].get("clients_detail", []))
+    # Drop the bulky working lists (full names/phones) now that matching is done.
+    snap["ahd_leads"].pop("leads_detail", None)
+    snap["ahd_tracker"].pop("clients_detail", None)
     snap["cash_in"] = pull_cash_in()
     return snap
 

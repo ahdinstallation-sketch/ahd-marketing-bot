@@ -33,8 +33,8 @@ DEFAULT_RECIPIENTS = [
     "nourannoor4@gmail.com",
 ]
 SEND_HOUR_CAIRO = 9
-# Pipeline-leak recency window. Default ~3 months; override with PIPELINE_LEAK_DAYS.
-LEAK_WINDOW_DAYS = int(os.environ.get("PIPELINE_LEAK_DAYS", "90") or 90)
+# Pipeline-leak recency window. Default ~6 months; override with PIPELINE_LEAK_DAYS.
+LEAK_WINDOW_DAYS = int(os.environ.get("PIPELINE_LEAK_DAYS", "180") or 180)
 
 
 def _recent(deals, days=LEAK_WINDOW_DAYS):
@@ -226,6 +226,9 @@ def render(ctx):
 
     # 5c) lead intelligence: brand-fit scoring + best-fit leads to call today
     P.append(_lead_intel_block(sheets.get("ahd_leads")))
+
+    # 5d) lead → sales journey: leads matched by name to tracker clients
+    P.append(_lead_journey_block(sheets.get("lead_journey")))
 
     # 6) pipeline leaks (from sheets) — limited to the recency window
     tr = sheets.get("ahd_tracker", {}) or {}
@@ -470,6 +473,48 @@ def _lead_intel_block(li):
       Score = urgency + project size + premium compound + contactability (first-party form
       answers only — no external profiling). Tier A ≥ 6, B 4–5, C &lt; 4.</div>""")
     return "".join(P)
+
+
+def _lead_journey_block(journey):
+    """Leads matched by name to clients in the sales tracker — the closed loop:
+    which Facebook leads actually became tracked clients, and where each stands
+    now (the tracker is what sales keeps after a measurement)."""
+    if not journey:
+        return ('<h3 style="margin:18px 0 6px;font-size:15px">🔗 Lead → sales journey</h3>'
+                '<div style="font-size:12px;color:#888">No lead names matched tracker clients '
+                'yet (names must match closely to link safely).</div>')
+    # status → colour so at-risk matches stand out
+    def scol(st):
+        s = (st or "").upper()
+        if "SIGNED" in s or "ORDER" in s:
+            return "#27ae60"
+        if "OVER BUDGET" in s or "NO ANSWER" in s:
+            return "#c0392b"
+        return "#2980b9"
+    rows = []
+    for j in journey[:12]:
+        stage = j.get("stage") or ""
+        status = j.get("status") or "(in tracker, no status)"
+        amt = f" · {esc(j['amount'])}" if j.get("amount") else ""
+        rep = f" · rep {esc(j['rep'])}" if j.get("rep") else ""
+        ago = f"{j['lead_days_ago']}d ago" if isinstance(j.get("lead_days_ago"), int) else ""
+        tier = j.get("tier") or ""
+        rows.append(f"""<div style="border-left:3px solid {scol(status)};padding:5px 10px;
+          margin:4px 0;background:#fcfcfa;font-size:12.5px">
+          <b>{esc(j.get('name') or j.get('client'))}</b>
+          {('<span style="background:#888;color:#fff;border-radius:3px;padding:0 5px;font-size:10px">'+esc(tier)+'</span>') if tier else ''}
+          {('· <a href="tel:'+esc(j['phone'])+'">'+esc(j['phone'])+'</a>') if j.get('phone') else ''}<br>
+          <span style="color:#444">Lead: {esc(j.get('interest') or '?')} ·
+          {esc(j.get('when') or '?')} · {esc(j.get('compound') or 'no compound')}
+          <span style="color:#aaa">{esc(ago)}</span></span><br>
+          <span style="color:{scol(status)};font-weight:600">Now: {esc(status)}</span>
+          {(' · stage '+esc(stage)) if stage else ''}{amt}{rep}</div>""")
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">🔗 Lead → sales journey
+      <span style="font-size:11px;color:#999;font-weight:400">— {len(journey)} Facebook lead(s)
+      now tracked as clients</span></h3>{''.join(rows)}
+      <div style="font-size:11px;color:#999;margin-top:4px">
+        Names matched between the lead-ads feed and the sales tracker (the list sales keeps
+        after a measurement). Conservative matching — only confident name links are shown.</div>""")
 
 
 def _leak_block(title, deals, color):
