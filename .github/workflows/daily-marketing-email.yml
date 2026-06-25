@@ -21,9 +21,13 @@ jobs:
       - name: Build and send daily report
         env:
           META_TOKEN: ${{ secrets.META_TOKEN }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
+          CASHIN_SHEET_ID: ${{ secrets.CASHIN_SHEET_ID }}
+          CASHIN_GID: ${{ secrets.CASHIN_GID }}
         # On manual dispatch we --force (send regardless of hour); on schedule the
         # Cairo-hour guard inside the script decides whether to actually send.
         run: |

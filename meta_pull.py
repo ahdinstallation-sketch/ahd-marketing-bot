@@ -19,9 +19,12 @@ TOKEN = os.environ.get("META_TOKEN", "").strip()
 
 ACCOUNTS = [
     {"id": "211980975881105", "name": "Amr Helmy Designs", "currency": "EGP"},
-    {"id": "2634184000109460", "name": "KORSAGY", "currency": "EGP"},
-    {"id": "1009314990138389", "name": "AHD (USD)", "currency": "USD"},
     {"id": "1535046841131907", "name": "Designy (USD)", "currency": "USD"},
+    # Not yet assigned to the AHDSYSTEM system user (Graph API returns
+    # "ad account owner has NOT granted ads_read"). Re-enable once added in
+    # Business Settings → System Users → AHDSYSTEM → Add Assets → Ad Accounts:
+    # {"id": "2634184000109460", "name": "KORSAGY", "currency": "EGP"},
+    # {"id": "1009314990138389", "name": "AHD (USD)", "currency": "USD"},
 ]
 PAGES = [
     {"id": "133848720036614", "name": "Amr Helmy Designs"},
@@ -34,9 +37,9 @@ LEAD_ACTIONS = {"lead", "onsite_conversion.lead_grouped", "leadgen_grouped",
                 "offsite_conversion.fb_pixel_lead", "onsite_conversion.messaging_conversation_started_7d"}
 
 
-def _get(path, params):
+def _get(path, params, token=None):
     params = dict(params)
-    params["access_token"] = TOKEN
+    params["access_token"] = token or TOKEN
     url = f"{GRAPH}/{path}?{urllib.parse.urlencode(params)}"
     try:
         with urllib.request.urlopen(url, timeout=60) as r:
@@ -151,43 +154,60 @@ def _account_block(acc):
     return out
 
 
+def _page_token(page_id):
+    """A System-User token can read a Page's public fields but NOT its /posts edge.
+    Exchange it for a per-Page token (works with pages_read_engagement)."""
+    res = _get(page_id, {"fields": "access_token"})
+    return res.get("access_token")
+
+
+# Rich set needs pages_read_user_content; shares-only works with pages_read_engagement.
+_POST_FIELDS_RICH = ("message,created_time,permalink_url,shares,"
+                     "reactions.summary(true).limit(0),"
+                     "comments.summary(true).limit(0)")
+_POST_FIELDS_SAFE = "message,created_time,permalink_url,shares"
+
+
 def _page_top_posts(page):
-    """Top organic posts in the last 14d, ranked by engaged users / reactions."""
+    """Top organic posts in the last 14d, ranked by engagement.
+
+    v21 deprecated the old post_impressions/post_engaged_users insight metrics, so
+    we rank on the engagement signals the token can actually read: shares always
+    (pages_read_engagement), plus reactions+comments when the token also has
+    pages_read_user_content. Degrades gracefully to shares-only otherwise.
+    """
+    ptok = _page_token(page["id"])
+    if not ptok:
+        return {"name": page["name"],
+                "error": "no page access token (assign page to system user)",
+                "posts": []}
     since = (_today_cairo() - datetime.timedelta(days=14)).isoformat()
-    params = {
-        "fields": ("message,created_time,permalink_url,"
-                   "insights.metric(post_impressions,post_impressions_unique,"
-                   "post_engaged_users,post_clicks,post_reactions_by_type_total)"),
-        "since": since,
-        "limit": 50,
-    }
-    res = _get(f"{page['id']}/posts", params)
+    base = {"since": since, "limit": 50}
+    res = _get(f"{page['id']}/posts", dict(base, fields=_POST_FIELDS_RICH), token=ptok)
+    rich = "error" not in res
+    if not rich:  # usually missing pages_read_user_content -> fall back to shares
+        res = _get(f"{page['id']}/posts", dict(base, fields=_POST_FIELDS_SAFE), token=ptok)
     if "error" in res:
         return {"name": page["name"], "error": res["error"], "posts": []}
+
     posts = []
     for p in res.get("data", []):
-        ins = {}
-        for m in (p.get("insights", {}) or {}).get("data", []):
-            vals = m.get("values", [{}])
-            ins[m["name"]] = vals[0].get("value", 0) if vals else 0
-        reactions = ins.get("post_reactions_by_type_total", {})
-        react_total = sum(reactions.values()) if isinstance(reactions, dict) else 0
-        engaged = ins.get("post_engaged_users", 0) or 0
-        impr = ins.get("post_impressions", 0) or 0
-        eng_rate = round(100.0 * engaged / impr, 1) if impr else 0.0
+        shares = (p.get("shares") or {}).get("count", 0) or 0
+        react = ((p.get("reactions") or {}).get("summary") or {}).get("total_count")
+        comments = ((p.get("comments") or {}).get("summary") or {}).get("total_count")
+        engagement = shares + (react or 0) + (comments or 0)
         posts.append({
             "msg": (p.get("message", "") or "")[:90],
             "created": p.get("created_time", "")[:10],
             "link": p.get("permalink_url", ""),
-            "impressions": impr,
-            "engaged": engaged,
-            "reactions": react_total,
-            "clicks": ins.get("post_clicks", 0) or 0,
-            "eng_rate": eng_rate,
+            "shares": shares,
+            "reactions": react,        # None when scope absent
+            "comments": comments,      # None when scope absent
+            "engagement": engagement,
         })
-    # Rank by engaged users then engagement rate; surface the strongest organic content.
-    posts = sorted(posts, key=lambda x: (x["engaged"], x["eng_rate"]), reverse=True)[:5]
-    return {"name": page["name"], "posts": posts}
+    # Strongest organic content first; ties broken by recency.
+    posts = sorted(posts, key=lambda x: (x["engagement"], x["created"]), reverse=True)[:5]
+    return {"name": page["name"], "rich": rich, "posts": posts}
 
 
 def pull_meta():

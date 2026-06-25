@@ -2,13 +2,17 @@
 """AHD Group — Daily Marketing Pulse.
 
 Merges Meta ads (meta_pull) + Google Sheets pipeline (sheets_pull) into a single
-action-oriented HTML email and sends it via Gmail SMTP.
+action-oriented HTML email and sends it via SMTP (Outlook/Microsoft 365 or Gmail;
+host auto-picked from the sender domain).
 
 Env vars:
-  META_TOKEN          Meta Graph API token (System User / long-lived)
-  GMAIL_USER          sender Gmail/Workspace address
-  GMAIL_APP_PASSWORD  16-char Gmail app password
-  RECIPIENTS          comma-separated list (overrides the default below)
+  META_TOKEN       Meta Graph API token (System User / long-lived)
+  MAIL_USER        sender address (e.g. projects@designy-egypt.com)
+  MAIL_PASSWORD    app password for that mailbox
+  SMTP_HOST/PORT   (optional) override SMTP host/port; inferred from domain if unset
+  RECIPIENTS       comma-separated list (overrides the default below)
+  CASHIN_SHEET_ID  (optional) Looker-backed sheet for live cash-in to date
+  (legacy GMAIL_USER / GMAIL_APP_PASSWORD still accepted as fallbacks)
 
 Usage:
   python3 daily_report.py --dry-run   # build report.html, print summary, DO NOT send
@@ -157,6 +161,9 @@ def render(ctx):
       {('EGP ' + fmt(s['egp_per_spend']) + ' signed per EGP spent') if s['egp_per_spend'] else 'signed/ spend ratio n/a'}
     </div>""")
 
+    # 3b) live cash-in to date (Looker-Studio-backed sheet, auto-updates)
+    P.append(_cash_in_block(sheets.get("cash_in")))
+
     # 4) boost winners (organic)
     P.append('<h3 style="margin:18px 0 6px;font-size:15px">⬆ Boost these — top organic posts</h3>')
     any_posts = False
@@ -167,11 +174,15 @@ def render(ctx):
         for post in pg.get("posts", [])[:3]:
             any_posts = True
             link = esc(post["link"])
+            metrics = [f"{fmt(post['shares'])} shares"]
+            if post.get("reactions") is not None:
+                metrics.append(f"{fmt(post['reactions'])} reactions")
+            if post.get("comments") is not None:
+                metrics.append(f"{fmt(post['comments'])} comments")
             P.append(f"""<div style="border-left:3px solid #27ae60;padding:6px 10px;margin:6px 0;
               background:#f6fbf7;font-size:13px">
               <b>{esc(pg['name'])}</b> · {esc(post['created'])} ·
-              {fmt(post['engaged'])} engaged · {fmt(post['impressions'])} reach ·
-              {fmt(post['reactions'])} reactions<br>
+              {esc(' · '.join(metrics))}<br>
               <span style="color:#444">{esc(post['msg'])}</span>
               {(' · <a href="'+link+'">view</a>') if link else ''}</div>""")
     if not any_posts:
@@ -226,6 +237,26 @@ def _kpi(label, value):
             f'<div style="font-size:20px;font-weight:700">{value}</div></div>')
 
 
+def _cash_in_block(ci):
+    """Live cash-in to date (AHD + optionally Designy) from the auto-updating
+    Looker-Studio-backed sheet. Silent when the source isn't configured yet."""
+    if not ci or not ci.get("configured"):
+        return ""
+    if ci.get("ahd") is None and ci.get("designy") is None:
+        return ""
+    cards = []
+    if ci.get("ahd") is not None:
+        cards.append(_kpi("AHD — cash in to date", fmt(ci["ahd"], "EGP ")))
+    if ci.get("designy") is not None:
+        cards.append(_kpi("Designy — cash in to date", fmt(ci["designy"], "EGP ")))
+    asof = f" · as of {esc(ci['as_of'])}" if ci.get("as_of") else ""
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash in to date
+      <span style="font-size:11px;color:#999;font-weight:400">— live from treasury dashboard{asof}</span></h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">{''.join(cards)}</div>
+      <div style="font-size:11px;color:#999;margin-top:5px">
+        Collections received to date (auto-updates with the Looker Studio sheet).</div>""")
+
+
 def _leak_block(title, deals, color):
     if not deals:
         return ""
@@ -263,12 +294,31 @@ def pick_focus(ctx):
 
 # ---------- send ----------
 
+def _smtp_settings(user):
+    """Pick SMTP host/port. Explicit SMTP_HOST/SMTP_PORT win; otherwise infer
+    from the sender domain (Outlook/Microsoft 365 vs Gmail)."""
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = os.environ.get("SMTP_PORT", "").strip()
+    if host:
+        return host, int(port or 587)
+    dom = user.split("@")[-1].lower()
+    if dom in ("gmail.com", "googlemail.com"):
+        return "smtp.gmail.com", 465            # SSL
+    if dom in ("outlook.com", "hotmail.com", "live.com", "msn.com"):
+        return "smtp-mail.outlook.com", 587     # STARTTLS
+    # Custom domain on Microsoft 365 (e.g. designy-egypt.com) -> 365 relay.
+    return "smtp.office365.com", 587            # STARTTLS
+
+
 def send_email(subject, html_body, recipients):
-    user = os.environ.get("GMAIL_USER", "").strip()
-    pw = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+    # New generic names, with backward-compatible GMAIL_* fallback.
+    user = (os.environ.get("MAIL_USER") or os.environ.get("GMAIL_USER") or "").strip()
+    pw = (os.environ.get("MAIL_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD") or "")
+    pw = pw.replace(" ", "").strip()
     if not user or not pw:
-        print("GMAIL_USER / GMAIL_APP_PASSWORD not set — cannot send.")
+        print("MAIL_USER / MAIL_PASSWORD (or GMAIL_*) not set — cannot send.")
         return False
+    host, port = _smtp_settings(user)
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"AHD Marketing Bot <{user}>"
@@ -276,10 +326,17 @@ def send_email(subject, html_body, recipients):
     msg.attach(MIMEText("Your client doesn't support HTML. Open in an HTML-capable client.", "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     ctx = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as server:
-        server.login(user, pw)
-        server.sendmail(user, recipients, msg.as_string())
-    print(f"Sent to: {', '.join(recipients)}")
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=ctx) as server:
+            server.login(user, pw)
+            server.sendmail(user, recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.login(user, pw)
+            server.sendmail(user, recipients, msg.as_string())
+    print(f"Sent to: {', '.join(recipients)} via {host}:{port}")
     return True
 
 

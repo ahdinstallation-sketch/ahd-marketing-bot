@@ -6,7 +6,7 @@ stuck/over-budget/no-answer deal lists. No external deps (stdlib only).
 Importable: `from sheets_pull import pull_sheets` -> dict.
 CLI: `python3 sheets_pull.py` prints the snapshot JSON.
 """
-import csv, io, json, collections, datetime, re, subprocess
+import os, csv, io, json, collections, datetime, re, subprocess
 
 SHEETS = {
     "designy_leads": "1VwE90ugoXTI4_90tKXzo7PT2TXpXYxyci0Ml3g9rrqs",
@@ -14,6 +14,18 @@ SHEETS = {
     "ahd_tracker":   "1DuEomzuYrvveXzvwg4hbj0tsGBQpjRk6iUpbOFm2FvQ",
 }
 TRACKER_GID = "57990844"
+
+# Live "cash in to date" source — the Google Sheet that backs the Looker Studio
+# treasury dashboard (auto-updates). Set CASHIN_SHEET_ID (and optionally
+# CASHIN_GID for a specific tab) as an env var / GitHub secret. Expected layout:
+# a simple label/value table, one row per company, e.g.
+#     AHD cash in to date , 5,430,000
+#     Designy cash in to date , 1,330,000
+#     As of , 2026-06-25
+# Label matching is fuzzy (looks for "ahd"/"designy" + the largest number in the
+# row), so column order is flexible. Degrades gracefully if unset or unreachable.
+CASHIN_SHEET_ID = os.environ.get("CASHIN_SHEET_ID", "").strip()
+CASHIN_GID = os.environ.get("CASHIN_GID", "").strip() or None
 DISPO_KEYS = ("bad lead", "good lead", "paid measurement", "no answer",
               "over budget", "signed", "visit", "low budget", "early stage",
               "converted", "contacted")
@@ -160,12 +172,45 @@ def analyze_tracker(rows):
     return out
 
 
+def _row_max_num(cells):
+    vals = [num(c) for c in cells if num(c) > 0]
+    return max(vals) if vals else None
+
+
+def pull_cash_in():
+    """Live cash-in-to-date per company from the Looker-Studio-backed sheet.
+    Returns {"configured", "ahd", "designy", "as_of"}; degrades to unconfigured."""
+    out = {"configured": bool(CASHIN_SHEET_ID), "ahd": None,
+           "designy": None, "as_of": None}
+    if not CASHIN_SHEET_ID:
+        return out
+    rows = fetch(CASHIN_SHEET_ID, CASHIN_GID)
+    for r in rows:
+        if not r:
+            continue
+        label = " ".join(c for c in r[:2]).strip().lower()
+        rowmax = _row_max_num(r)
+        if "ahd" in label and out["ahd"] is None and rowmax:
+            out["ahd"] = rowmax
+        elif "designy" in label and out["designy"] is None and rowmax:
+            out["designy"] = rowmax
+        elif out["as_of"] is None and any(
+                k in label for k in ("as of", "as at", "updated", "refresh")):
+            for c in r[1:]:
+                # a date-like value: has a digit and a separator
+                if c and any(ch.isdigit() for ch in c) and re.search(r"[-/]", c):
+                    out["as_of"] = c.strip()
+                    break
+    return out
+
+
 def pull_sheets():
     snap = {"pulled_at": datetime.datetime.now().isoformat(timespec="seconds")}
     snap["designy_leads"] = analyze_leads(fetch(SHEETS["designy_leads"]))
     snap["outdoor_leads"] = analyze_leads(fetch(SHEETS["outdoor_leads"]))
     # Default sheet matches the tracker tab the prior session validated (header on row 2).
     snap["ahd_tracker"] = analyze_tracker(fetch(SHEETS["ahd_tracker"]))
+    snap["cash_in"] = pull_cash_in()
     return snap
 
 
