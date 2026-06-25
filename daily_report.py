@@ -211,6 +211,12 @@ def render(ctx):
     if not any_loser:
         P.append('<div style="font-size:12px;color:#888">No clear paid losers flagged (good, or token/scope).</div>')
 
+    # 5b) media-buyer view: delivery health + per-campaign 7d trend + fatigue
+    P.append(_media_buyer_block(meta))
+
+    # 5c) lead intelligence: brand-fit scoring + best-fit leads to call today
+    P.append(_lead_intel_block(sheets.get("ahd_leads")))
+
     # 6) pipeline leaks (from sheets) — limited to the recency window
     tr = sheets.get("ahd_tracker", {}) or {}
     win = LEAK_WINDOW_DAYS
@@ -275,6 +281,142 @@ def _cash_in_block(ci):
       <div style="display:flex;gap:10px;flex-wrap:wrap">{''.join(cards)}</div>
       <div style="font-size:11px;color:#999;margin-top:5px">
         Collections received to date (auto-updates with the Looker Studio sheet).</div>""")
+
+
+def _cpl_trend(cur, prev):
+    """Arrow for CPL change (lower CPL = green/good, higher = red/bad)."""
+    if cur is None or prev is None or prev == 0:
+        return ""
+    if cur > prev * 1.05:
+        return f' <span style="color:#c0392b">▲{round((cur/prev-1)*100)}%</span>'
+    if cur < prev * 0.95:
+        return f' <span style="color:#27ae60">▼{round((1-cur/prev)*100)}%</span>'
+    return ' <span style="color:#999">≈</span>'
+
+
+def _media_buyer_block(meta):
+    """A media buyer's daily read: what's actually delivering vs paused/blocked,
+    which campaigns are improving vs decaying (7d vs prior 7d), and ad fatigue."""
+    P = ['<h3 style="margin:18px 0 6px;font-size:15px">📊 Media-buyer view — delivery, '
+         'campaign trend & fatigue</h3>']
+    any_data = False
+    for a in meta.get("accounts", []):
+        dh = a.get("delivery", {}) or {}
+        ct = a.get("campaign_trend", {}) or {}
+        if "error" in a.get("yesterday", {}):
+            continue
+        any_data = True
+        camps = dh.get("campaigns", {}) or {}
+        ads = dh.get("ads", {}) or {}
+        active_c = camps.get("ACTIVE", 0)
+        active_a = ads.get("ACTIVE", 0)
+        issues = dh.get("issue_ads", []) or []
+        P.append(f"""<div style="border:1px solid #eee;border-radius:6px;padding:8px 12px;
+          margin:6px 0;background:#fafafa;font-size:12.5px">
+          <b>{esc(a['name'])}</b> <span style="color:#aaa">{esc(a.get('currency',''))}</span><br>
+          Campaigns active: <b>{active_c}</b> · Ads active: <b>{active_a}</b>
+          {(' · <span style="color:#c0392b">'+str(len(issues))+' ad(s) blocked in active campaigns</span>') if issues else ''}""")
+        # flag blocked ads explicitly (these silently kill live delivery)
+        for it in issues[:4]:
+            P.append(f"""<div style="color:#c0392b;padding-left:8px">⚠ {esc(it['name'] or it['campaign'])}
+              — {esc(it['status'])}</div>""")
+        # per-campaign trend table (top spenders, 7d vs prior 7d)
+        rows = ct.get("campaigns", []) if "error" not in ct else []
+        if rows:
+            P.append("""<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px">
+              <tr style="background:#f0ece1;text-align:right">
+              <th style="text-align:left;padding:4px">Campaign (7d)</th>
+              <th style="padding:4px">Spend</th><th style="padding:4px">Leads</th>
+              <th style="padding:4px">CPL</th><th style="padding:4px">vs prior</th>
+              <th style="padding:4px">Freq</th></tr>""")
+            for r in rows[:5]:
+                freq = r.get("frequency", 0) or 0
+                fatig = ' <span style="color:#c0392b">🔥</span>' if freq >= 3.5 else ""
+                P.append(f"""<tr style="text-align:right;border-bottom:1px solid #eee">
+                  <td style="text-align:left;padding:4px">{esc(r['name'][:34])}</td>
+                  <td style="padding:4px">{fmt(r['spend'])}</td>
+                  <td style="padding:4px">{fmt(r['leads'])}</td>
+                  <td style="padding:4px">{fmt(r['cpl'])}</td>
+                  <td style="padding:4px">{_cpl_trend(r['cpl'], r['prev_cpl'])}</td>
+                  <td style="padding:4px">{fmt(freq)}{fatig}</td></tr>""")
+            P.append("</table>")
+        if "error" in ct:
+            P.append(f'<div style="color:#b00;font-size:11px">trend: {esc(ct["error"])[:70]}</div>')
+        P.append("</div>")
+    if not any_data:
+        P.append('<div style="font-size:12px;color:#888">No delivery data (token/scope).</div>')
+    P.append("""<div style="font-size:11px;color:#999;margin-top:2px">
+      CPL arrow = change vs the previous 7 days (▼ green = improving, ▲ red = worse).
+      Freq ≥ 3.5 (🔥) = audience seeing the ad too often — refresh creative or widen targeting.</div>""")
+    return "".join(P)
+
+
+# Recommended next action per lead tier (first-party-data driven, privacy-safe).
+_TIER_ACTION = {
+    "A": "Call within the hour — premium fit + ready to buy. Book a showroom session.",
+    "B": "Call today — qualify budget & timeline, nurture toward a session.",
+    "C": "WhatsApp a catalogue + offer; low priority, batch these.",
+}
+
+
+def _lead_intel_block(li):
+    """Brand-fit lead intelligence: where leads come from, what they want, and the
+    specific best-fit people to call first (name + phone + why), scored from the
+    Facebook form answers (urgency, project size, premium compound)."""
+    if not li or li.get("error") or not li.get("total"):
+        return ('<h3 style="margin:18px 0 6px;font-size:15px">🎯 Lead intelligence</h3>'
+                '<div style="font-size:12px;color:#888">No lead-form data available '
+                f'({esc((li or {}).get("error","")) or "empty feed"}).</div>')
+    t = li["tiers"]
+    P = [f"""<h3 style="margin:18px 0 6px;font-size:15px">🎯 Lead intelligence — brand fit & who to call
+      <span style="font-size:11px;color:#999;font-weight:400">— {fmt(li['total'])} leads scored ·
+      {fmt(li['last7'])} new last 7d</span></h3>"""]
+    # tier summary + unworked warning
+    P.append(f"""<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      {_kpi('🟢 Tier A (call now)', fmt(t['A']))}
+      {_kpi('🟡 Tier B (today)', fmt(t['B']))}
+      {_kpi('⚪ Tier C (nurture)', fmt(t['C']))}
+    </div>""")
+    if li.get("unworked"):
+        P.append(f"""<div style="background:#fdf6f5;border:1px solid #f0d4cf;border-radius:6px;
+          padding:8px 12px;font-size:12.5px;color:#a33;margin-bottom:8px">
+          ⚠ <b>{fmt(li['unworked'])}</b> of {fmt(li['total'])} leads still show status CREATED
+          (un-worked in the feed) — speed-to-lead is the #1 fixable leak.</div>""")
+    # breakdowns
+    def chips(d):
+        return " · ".join(f"{esc(k)} <b>{v}</b>" for k, v in d.items())
+    P.append(f"""<div style="font-size:12.5px;line-height:1.8;background:#faf7ee;
+      border:1px solid #eee;border-radius:6px;padding:8px 12px;margin-bottom:8px">
+      <b>Interest:</b> {chips(li['by_interest'])}<br>
+      <b>Timeline:</b> {chips(li['by_urgency'])}<br>
+      <b>Platform:</b> {chips(li['by_platform'])}<br>
+      <b>Top compounds:</b> {chips(li['by_compound'])}</div>""")
+    # best-fit leads to call, with action
+    P.append('<div style="font-weight:600;font-size:13px;margin:8px 0 4px">'
+             'Best-fit leads to action first:</div>')
+    shown_tiers = set()
+    for l in li.get("top_leads", [])[:10]:
+        color = {"A": "#27ae60", "B": "#e67e22", "C": "#999"}.get(l["tier"], "#999")
+        why = (" · " + ", ".join(l["why"])) if l.get("why") else ""
+        ago = f"{l['days_ago']}d ago" if isinstance(l.get("days_ago"), int) else ""
+        action = _TIER_ACTION.get(l["tier"], "")
+        act_line = (f'<div style="color:#555;font-size:11.5px;margin-top:2px">→ {esc(action)}</div>'
+                    if l["tier"] not in shown_tiers else "")
+        shown_tiers.add(l["tier"])
+        P.append(f"""<div style="border-left:3px solid {color};padding:5px 10px;margin:4px 0;
+          background:#fcfcfa;font-size:12.5px">
+          <b>{esc(l['name'] or '(no name)')}</b>
+          <span style="background:{color};color:#fff;border-radius:3px;padding:0 5px;font-size:10px">
+          {esc(l['tier'])} · {l['score']}</span>
+          {('· <a href="tel:'+esc(l['phone'])+'">'+esc(l['phone'])+'</a>') if l.get('phone') else '· <span style="color:#c0392b">no phone</span>'}
+          <span style="color:#aaa">{esc(ago)}</span><br>
+          <span style="color:#444">{esc(l['interest'])} · {esc(l['when'])} ·
+          {esc(l['compound'] or 'no compound')} · {esc(l['platform'])}{esc(why)}</span>
+          {act_line}</div>""")
+    P.append("""<div style="font-size:11px;color:#999;margin-top:4px">
+      Score = urgency + project size + premium compound + contactability (first-party form
+      answers only — no external profiling). Tier A ≥ 6, B 4–5, C &lt; 4.</div>""")
+    return "".join(P)
 
 
 def _leak_block(title, deals, color):

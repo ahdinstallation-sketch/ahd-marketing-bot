@@ -14,6 +14,8 @@ SHEETS = {
     "ahd_tracker":   "1DuEomzuYrvveXzvwg4hbj0tsGBQpjRk6iUpbOFm2FvQ",
 }
 TRACKER_GID = "57990844"
+# The AHD Facebook Lead-Ads feed (same workbook as outdoor_leads, specific tab).
+AHD_LEADS_GID = "1977817316"
 
 # Live "cash in to date" source — the Google Sheet that backs the Looker Studio
 # treasury dashboard (auto-updates). Set CASHIN_SHEET_ID (and optionally
@@ -193,6 +195,154 @@ def analyze_tracker(rows):
     return out
 
 
+# ---- AHD lead-ads feed (positional parse + brand-fit scoring) ----
+# The Facebook Lead-Ads export sheet has NO header on its data columns; the
+# column legend lives off to the right (cols 19-37). Data is positional, cols 0-18,
+# newest lead first. Map (validated on live data, 304 leads):
+_LEAD_COLS = {
+    "id": 0, "created_time": 1, "ad_name": 3, "adset_name": 5,
+    "campaign_name": 7, "form_name": 9, "is_organic": 10, "platform": 11,
+    "interest": 12, "when_planning": 13, "compound": 14, "full_name": 15,
+    "phone": 16, "lead_status": 18,
+}
+# Premium Cairo compounds (brand fit for AHD's high-end kitchens/wardrobes).
+_PREMIUM_COMPOUNDS = ("palm hills", "new giza", "mivida", "mountain view",
+                      "madinaty", "maadi", "new cairo", "zayed", "الشيخ زايد",
+                      "zed", "katameya", "uptown", "hyde park", "swan lake")
+_URGENCY_SCORE = {"immediately": 3, "within_3_months": 2, "within_3_month": 2,
+                  "3-6_months": 1, "3–6_months": 1, "3_6_months": 1,
+                  "exploring_options": 0, "exploring": 0}
+_BIG_PROJECT = ("full_home", "full home", "multiple_spaces", "multiple spaces")
+_SMALL_PROJECT = ("kitchen", "wardrobe", "dressing", "closet")
+
+
+def _norm(s):
+    return (s or "").strip().lower()
+
+
+def _lead_date(s):
+    """Lead-ads created_time is ISO with offset, e.g. 2026-06-23T05:01:13-05:00."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def _score_lead(lead):
+    """Brand-fit score from first-party form answers (no online profiling):
+    urgency + project size + premium compound + contactability. Tier A/B/C."""
+    sc, why = 0, []
+    u = _URGENCY_SCORE.get(_norm(lead["when_planning"]))
+    if u is not None:
+        sc += u
+        if u >= 2:
+            why.append("ready to buy soon")
+    interest = _norm(lead["interest"])
+    if any(k in interest for k in _BIG_PROJECT):
+        sc += 2
+        why.append("whole-home / multi-room")
+    elif any(k in interest for k in _SMALL_PROJECT):
+        sc += 1
+    comp = _norm(lead["compound"])
+    if any(k in comp for k in _PREMIUM_COMPOUNDS):
+        sc += 2
+        why.append("premium compound")
+    elif comp:
+        sc += 1
+    # contactability: a real phone present
+    if re.search(r"\d{7,}", lead.get("phone", "") or ""):
+        sc += 1
+    else:
+        why.append("no phone")
+    tier = "A" if sc >= 6 else ("B" if sc >= 4 else "C")
+    return sc, tier, why
+
+
+def analyze_ahd_leads(rows, gid_note=""):
+    """Parse the AHD Facebook Lead-Ads sheet (positional) and score each lead for
+    brand fit. Returns aggregate breakdowns + the best-fit (Tier A/B) leads with
+    name+phone so the team can act per lead."""
+    if not rows:
+        return {"error": "no rows", "leads": []}
+    out = {"total": 0, "by_platform": {}, "by_interest": {}, "by_urgency": {},
+           "by_campaign": {}, "by_compound": {}, "tiers": {"A": 0, "B": 0, "C": 0},
+           "yesterday": 0, "last7": 0, "last30": 0, "top_leads": [],
+           "unworked": 0}
+    today = datetime.date.today()
+    leads = []
+    for r in rows:
+        # A valid lead row starts with a Facebook lead id (l:...) or a long digit id.
+        idv = r[_LEAD_COLS["id"]].strip() if len(r) > _LEAD_COLS["id"] else ""
+        if not idv or not (idv.lower().startswith("l:") or idv.isdigit()):
+            continue
+
+        def cell(key):
+            i = _LEAD_COLS[key]
+            return r[i].strip() if len(r) > i and r[i] is not None else ""
+
+        lead = {k: cell(k) for k in _LEAD_COLS}
+        # Strip the Lead-Ads field prefixes (phone "p:+201…", id "l:…").
+        lead["phone"] = re.sub(r"^p:\s*", "", lead["phone"]).strip()
+        d = _lead_date(lead["created_time"])
+        sc, tier, why = _score_lead(lead)
+        lead["score"], lead["tier"], lead["why"] = sc, tier, why
+        lead["date"] = d.isoformat() if d else None
+        lead["days_ago"] = (today - d).days if d else None
+        leads.append(lead)
+
+        out["total"] += 1
+        out["tiers"][tier] += 1
+        plat = _norm(lead["platform"]) or "(unknown)"
+        out["by_platform"][plat] = out["by_platform"].get(plat, 0) + 1
+        intr = lead["interest"].strip() or "(blank)"
+        out["by_interest"][intr] = out["by_interest"].get(intr, 0) + 1
+        urg = lead["when_planning"].strip() or "(blank)"
+        out["by_urgency"][urg] = out["by_urgency"].get(urg, 0) + 1
+        camp = lead["campaign_name"].strip() or "(blank)"
+        out["by_campaign"][camp] = out["by_campaign"].get(camp, 0) + 1
+        comp = lead["compound"].strip() or "(blank)"
+        out["by_compound"][comp] = out["by_compound"].get(comp, 0) + 1
+        if _norm(lead["lead_status"]) in ("", "created"):
+            out["unworked"] += 1
+        if d:
+            ago = (today - d).days
+            if ago == 1:
+                out["yesterday"] += 1
+            if 0 <= ago <= 7:
+                out["last7"] += 1
+            if 0 <= ago <= 30:
+                out["last30"] += 1
+
+    # Sort helper for the breakdown dicts (most common first, trimmed).
+    def topn(d, n=8):
+        return dict(sorted(d.items(), key=lambda kv: -kv[1])[:n])
+    out["by_platform"] = topn(out["by_platform"])
+    out["by_interest"] = topn(out["by_interest"])
+    out["by_urgency"] = topn(out["by_urgency"])
+    out["by_campaign"] = topn(out["by_campaign"], 6)
+    out["by_compound"] = topn(out["by_compound"], 10)
+
+    # Best-fit leads to act on first: highest score, then most recent. Prefer
+    # the last 14 days (actionable now) but fall back to overall if the feed is old.
+    recent = [l for l in leads if l["days_ago"] is not None and l["days_ago"] <= 14]
+    pool = recent if recent else leads
+    pool = sorted(pool, key=lambda l: (l["score"],
+                  -(l["days_ago"] if l["days_ago"] is not None else 9999)),
+                  reverse=True)
+    out["top_leads"] = [{
+        "name": l["full_name"], "phone": l["phone"], "tier": l["tier"],
+        "score": l["score"], "interest": l["interest"],
+        "when": l["when_planning"], "compound": l["compound"],
+        "platform": l["platform"], "campaign": l["campaign_name"],
+        "days_ago": l["days_ago"], "why": l["why"],
+    } for l in pool[:12]]
+    out["recent_window"] = bool(recent)
+    return out
+
+
 def _row_max_num(cells):
     vals = [num(c) for c in cells if num(c) > 0]
     return max(vals) if vals else None
@@ -229,6 +379,8 @@ def pull_sheets():
     snap = {"pulled_at": datetime.datetime.now().isoformat(timespec="seconds")}
     snap["designy_leads"] = analyze_leads(fetch(SHEETS["designy_leads"]))
     snap["outdoor_leads"] = analyze_leads(fetch(SHEETS["outdoor_leads"]))
+    # Same workbook, the Facebook Lead-Ads tab — parsed positionally + brand-scored.
+    snap["ahd_leads"] = analyze_ahd_leads(fetch(SHEETS["outdoor_leads"], AHD_LEADS_GID))
     # Default sheet matches the tracker tab the prior session validated (header on row 2).
     snap["ahd_tracker"] = analyze_tracker(fetch(SHEETS["ahd_tracker"]))
     snap["cash_in"] = pull_cash_in()

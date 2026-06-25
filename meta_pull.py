@@ -71,6 +71,9 @@ def _dates():
         "mtd": {"since": str(first), "until": str(mtd_end)},
         "last7": {"since": str(today - datetime.timedelta(days=7)),
                   "until": str(yest)},
+        # the 7 days BEFORE last7, for trend comparison
+        "prev7": {"since": str(today - datetime.timedelta(days=14)),
+                  "until": str(today - datetime.timedelta(days=8))},
     }
 
 
@@ -90,9 +93,11 @@ def _leads_from_actions(row):
 
 
 def _insights(account_id, time_range, level="account"):
-    fields = "spend,impressions,clicks,ctr,cpc,reach,actions,date_start,date_stop"
-    if level != "account":
+    fields = "spend,impressions,clicks,ctr,cpc,reach,frequency,actions,date_start,date_stop"
+    if level == "ad":
         fields = "ad_id,ad_name,campaign_name," + fields
+    elif level == "campaign":
+        fields = "campaign_id,campaign_name," + fields
     params = {
         "level": level,
         "fields": fields,
@@ -101,6 +106,92 @@ def _insights(account_id, time_range, level="account"):
     }
     res = _get(f"act_{account_id}/insights", params)
     return res
+
+
+def _delivery_health(account_id):
+    """Count campaigns and ads by delivery status, so the report can flag what's
+    actually running vs paused vs blocked (WITH_ISSUES / DISAPPROVED / etc.).
+    Uses effective_status, the status Meta actually delivers on."""
+    out = {"campaigns": {}, "ads": {}, "active_campaign_names": [],
+           "issue_ads": []}
+    # Campaigns
+    res = _get(f"act_{account_id}/campaigns",
+               {"fields": "name,effective_status", "limit": 500})
+    if "error" not in res:
+        for c in res.get("data", []):
+            st = c.get("effective_status", "UNKNOWN")
+            out["campaigns"][st] = out["campaigns"].get(st, 0) + 1
+            if st == "ACTIVE":
+                out["active_campaign_names"].append(c.get("name", ""))
+    else:
+        out["campaigns_error"] = res["error"]
+    # Ads
+    active_set = set(out["active_campaign_names"])
+    res = _get(f"act_{account_id}/ads",
+               {"fields": "name,effective_status,campaign{name}", "limit": 500})
+    if "error" not in res:
+        for a in res.get("data", []):
+            st = a.get("effective_status", "UNKNOWN")
+            out["ads"][st] = out["ads"].get(st, 0) + 1
+            # Only flag blocked ads that sit INSIDE an active campaign — those are
+            # the ones actually losing you live delivery. (Archived/disapproved ads
+            # in long-paused campaigns are noise.)
+            cname = (a.get("campaign") or {}).get("name", "")
+            if st in ("WITH_ISSUES", "DISAPPROVED", "PENDING_REVIEW") \
+                    and cname in active_set:
+                out["issue_ads"].append({
+                    "name": a.get("name", ""), "status": st, "campaign": cname,
+                })
+    else:
+        out["ads_error"] = res["error"]
+    return out
+
+
+def _campaign_trend(account_id):
+    """Per-campaign performance for last7, with the prior 7 days as a trend
+    baseline (spend / leads / CPL direction). Media-buyer view of which
+    campaigns are improving vs decaying."""
+    dates = _dates()
+
+    def by_campaign(time_range):
+        res = _insights(account_id, time_range, level="campaign")
+        out = {}
+        if "error" in res:
+            return out, res["error"]
+        for r in res.get("data", []):
+            cid = r.get("campaign_id") or r.get("campaign_name")
+            spend = _f(r, "spend")
+            leads = _leads_from_actions(r)
+            out[cid] = {
+                "name": r.get("campaign_name", ""),
+                "spend": spend,
+                "leads": leads,
+                "ctr": _f(r, "ctr"),
+                "frequency": _f(r, "frequency"),
+                "cpl": (spend / leads) if leads else None,
+            }
+        return out, None
+
+    cur, err = by_campaign(dates["last7"])
+    if err:
+        return {"error": err, "campaigns": []}
+    prev, _ = by_campaign(dates["prev7"])
+    rows = []
+    for cid, c in cur.items():
+        p = prev.get(cid, {})
+        rows.append({
+            "name": c["name"],
+            "spend": round(c["spend"], 2),
+            "leads": int(c["leads"]),
+            "cpl": round(c["cpl"], 2) if c["cpl"] is not None else None,
+            "ctr": round(c["ctr"], 2),
+            "frequency": round(c["frequency"], 2),
+            "prev_spend": round(p.get("spend", 0), 2),
+            "prev_leads": int(p.get("leads", 0)),
+            "prev_cpl": round(p["cpl"], 2) if p.get("cpl") is not None else None,
+        })
+    rows = sorted(rows, key=lambda r: -r["spend"])
+    return {"campaigns": rows}
 
 
 def _account_block(acc):
@@ -123,6 +214,7 @@ def _account_block(acc):
             "ctr": round(_f(row, "ctr"), 2),
             "cpc": round(_f(row, "cpc"), 2),
             "reach": int(_f(row, "reach")),
+            "frequency": round(_f(row, "frequency"), 2),
             "leads": int(leads),
             "cpl": round(spend / leads, 2) if leads else None,
         }
@@ -151,6 +243,9 @@ def _account_block(acc):
     winners = sorted(winners, key=lambda a: a["cpl"])[:5]
     out["ad_losers"] = losers
     out["ad_winners"] = winners
+    # Media-buyer view: delivery health + per-campaign 7d-vs-prior-7d trend.
+    out["delivery"] = _delivery_health(acc["id"])
+    out["campaign_trend"] = _campaign_trend(acc["id"])
     return out
 
 
