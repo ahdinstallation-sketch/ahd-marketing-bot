@@ -94,6 +94,17 @@ def analyze_leads(rows):
     return out
 
 
+def _tracker_date(s):
+    """Parse the tracker's day/month/year date cells; None if unparseable."""
+    s = (s or "").strip()
+    for f in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(s, f).date()
+        except ValueError:
+            pass
+    return None
+
+
 def analyze_tracker(rows):
     if not rows or len(rows) < 3:
         return {}
@@ -142,14 +153,24 @@ def analyze_tracker(rows):
     cl = idx("CLIENT")
     sp = idx("SALES PERSON")
     nt = idx("Notes")
+    # Date columns used to age a deal (most recent available wins).
+    date_idx = [idx(n) for n in ("OFFER DATE", "SESSION DATE", "Call Date",
+                                 "Finalize Date")]
+    date_idx = [i for i in date_idx if i is not None]
+    today = datetime.date.today()
 
     def deal(r):
+        ds = [_tracker_date(r[i]) for i in date_idx if len(r) > i]
+        ds = [d for d in ds if d]
+        bd = max(ds) if ds else None
         return {
             "client": r[cl].strip() if cl is not None and len(r) > cl else "",
             "rep": r[sp].strip() if sp is not None and len(r) > sp else "",
             "amount": r[ai].strip() if ai is not None and len(r) > ai else "",
             "amount_num": num(r[ai]) if ai is not None and len(r) > ai else 0.0,
             "note": r[nt].strip() if nt is not None and len(r) > nt else "",
+            "date": bd.isoformat() if bd else None,
+            "days_ago": (today - bd).days if bd else None,
         }
 
     stuck = []

@@ -33,6 +33,14 @@ DEFAULT_RECIPIENTS = [
     "nourannoor4@gmail.com",
 ]
 SEND_HOUR_CAIRO = 9
+# Pipeline-leak recency window. Default ~3 months; override with PIPELINE_LEAK_DAYS.
+LEAK_WINDOW_DAYS = int(os.environ.get("PIPELINE_LEAK_DAYS", "90") or 90)
+
+
+def _recent(deals, days=LEAK_WINDOW_DAYS):
+    """Keep deals dated within the window (undated deals are excluded)."""
+    return [d for d in deals
+            if d.get("days_ago") is not None and 0 <= d["days_ago"] <= days]
 
 
 def cairo_now():
@@ -203,15 +211,27 @@ def render(ctx):
     if not any_loser:
         P.append('<div style="font-size:12px;color:#888">No clear paid losers flagged (good, or token/scope).</div>')
 
-    # 6) pipeline leaks (from sheets)
+    # 6) pipeline leaks (from sheets) — limited to the recency window
     tr = sheets.get("ahd_tracker", {}) or {}
-    P.append('<h3 style="margin:18px 0 6px;font-size:15px">Pipeline leaks — money at risk</h3>')
-    P.append(_leak_block("OVER BUDGET — re-spec to budget / cheque plan, don't blanket-discount",
-                         tr.get("over_budget", []), "#e67e22"))
-    P.append(_leak_block("NO ANSWER AFTER OFFER — re-contact within 48h",
-                         tr.get("no_answer_after_offer", []), "#8e44ad"))
-    P.append(_leak_block("CONTRACTED, NO ORDER — chase to deposit/production",
-                         tr.get("contracted_no_order", []), "#2980b9"))
+    win = LEAK_WINDOW_DAYS
+    months = max(1, round(win / 30))
+    P.append(f"""<h3 style="margin:18px 0 6px;font-size:15px">Pipeline leaks — money at risk
+      <span style="font-size:11px;color:#999;font-weight:400">— last {months} month{'s' if months!=1 else ''} (by offer/session date)</span></h3>""")
+    leaks = [
+        ("OVER BUDGET — re-spec to budget / cheque plan, don't blanket-discount",
+         _recent(tr.get("over_budget", []), win), "#e67e22"),
+        ("NO ANSWER AFTER OFFER — re-contact within 48h",
+         _recent(tr.get("no_answer_after_offer", []), win), "#8e44ad"),
+        ("CONTRACTED, NO ORDER — chase to deposit/production",
+         _recent(tr.get("contracted_no_order", []), win), "#2980b9"),
+    ]
+    if any(d for _, d, _ in leaks):
+        for title, deals, color in leaks:
+            P.append(_leak_block(title, deals, color))
+    else:
+        P.append(f"""<div style="font-size:12px;color:#888">No pipeline leaks dated within
+          the last {win} days. (Older flagged deals exist but fall outside the window — widen
+          it with PIPELINE_LEAK_DAYS if you want them surfaced.)</div>""")
 
     # leads snapshot
     dl = sheets.get("designy_leads", {}) or {}
@@ -263,9 +283,12 @@ def _leak_block(title, deals, color):
     rows = []
     for d in deals[:6]:
         amt = d.get("amount") or ""
+        ago = d.get("days_ago")
+        age = f"· {ago}d ago" if isinstance(ago, int) else ""
         rows.append(f"""<div style="font-size:12.5px;padding:2px 0">
           • <b>{esc(d.get('client'))}</b> {('· '+esc(amt)) if amt else ''}
-          {('· '+esc(d.get('rep'))) if d.get('rep') else ''}</div>""")
+          {('· '+esc(d.get('rep'))) if d.get('rep') else ''}
+          <span style="color:#aaa">{age}</span></div>""")
     return (f'<div style="border-left:3px solid {color};padding:6px 10px;margin:6px 0">'
             f'<div style="font-weight:600;font-size:13px">{esc(title)} '
             f'<span style="color:#888">({len(deals)})</span></div>{"".join(rows)}</div>')
@@ -273,9 +296,9 @@ def _leak_block(title, deals, color):
 
 def pick_focus(ctx):
     tr = ctx["sheets"].get("ahd_tracker", {}) or {}
-    ob = tr.get("over_budget", [])
-    na = tr.get("no_answer_after_offer", [])
-    co = tr.get("contracted_no_order", [])
+    ob = _recent(tr.get("over_budget", []))
+    na = _recent(tr.get("no_answer_after_offer", []))
+    co = _recent(tr.get("contracted_no_order", []))
     # biggest single money-at-risk item
     cands = []
     if ob:
