@@ -82,9 +82,16 @@ def build_context(meta, sheets):
                   for a in meta.get("accounts", []))
     m_leads = sum((a.get("mtd", {}) or {}).get("leads", 0) or 0
                   for a in meta.get("accounts", []))
+    w_spend = sum((a.get("last7", {}) or {}).get("spend", 0) or 0
+                  for a in meta.get("accounts", []))
+    w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0
+                  for a in meta.get("accounts", []))
     ctx["group"] = {
         "spend_yest": y_spend, "spend_mtd": m_spend,
         "leads_yest": y_leads, "leads_mtd": m_leads,
+        "spend_7d": w_spend, "leads_7d": w_leads,
+        "cpl_yest": round(y_spend / y_leads, 1) if y_leads else None,
+        "cpl_7d": round(w_spend / w_leads, 1) if w_leads else None,
         "cpl_mtd": round(m_spend / m_leads, 1) if m_leads else None,
     }
     tr = sheets.get("ahd_tracker", {}) or {}
@@ -131,6 +138,9 @@ def render(ctx):
     </div>
     <div style="font-size:11px;color:#888;margin-bottom:14px">
       Spend in each account's own currency; EGP accounts dominate. CPL = ad spend ÷ leads.</div>""")
+
+    # 1b) COST PER LEAD — headline metric for the profitability calculator
+    P.append(_cpl_hero(ctx))
 
     # 2) per-account performance table
     P.append('<h3 style="margin:14px 0 6px;font-size:15px">Spend & performance by account</h3>')
@@ -261,6 +271,48 @@ def _kpi(label, value):
     return (f'<div style="flex:1;min-width:150px;background:#f5f1e6;border-radius:6px;'
             f'padding:10px 12px"><div style="font-size:11px;color:#888">{esc(label)}</div>'
             f'<div style="font-size:20px;font-weight:700">{value}</div></div>')
+
+
+def _cpl_big(label, value, sub=""):
+    sub_html = f'<div style="font-size:11px;color:#bda86a;margin-top:2px">{esc(sub)}</div>' if sub else ""
+    return (f'<div style="flex:1;min-width:140px;background:#1b1b1b;border:1px solid #3a3a2c;'
+            f'border-radius:8px;padding:12px 14px">'
+            f'<div style="font-size:11px;color:#cdbf8e;text-transform:uppercase;letter-spacing:.5px">{esc(label)}</div>'
+            f'<div style="font-size:26px;font-weight:800;color:#f3e6b0">{value}</div>{sub_html}</div>')
+
+
+def _cpl_hero(ctx):
+    """Cost per lead — the headline number the team feeds into the profitability
+    calculator. Shows yesterday / last-7d / month-to-date so they can pick a stable
+    figure (7d or MTD), plus the per-account CPL underneath."""
+    g = ctx["group"]
+    meta = ctx["meta"]
+    cards = (
+        _cpl_big("CPL — last 7 days", fmt(g.get("cpl_7d"), "EGP "),
+                 f"{fmt(g.get('leads_7d'))} leads · {fmt(g.get('spend_7d'),'EGP ')} spend")
+        + _cpl_big("CPL — month to date", fmt(g.get("cpl_mtd"), "EGP "),
+                   f"{fmt(g.get('leads_mtd'))} leads · {fmt(g.get('spend_mtd'),'EGP ')} spend")
+        + _cpl_big("CPL — yesterday", fmt(g.get("cpl_yest"), "EGP "),
+                   f"{fmt(g.get('leads_yest'))} leads")
+    )
+    # per-account CPL line (only accounts with leads)
+    parts = []
+    for a in meta.get("accounts", []):
+        m = a.get("mtd", {}) or {}
+        if "error" in m or not m.get("leads"):
+            continue
+        parts.append(f"{esc(a['name'])} <b style='color:#f3e6b0'>"
+                     f"{fmt(m.get('cpl'))} {esc(a['currency'])}</b> ({fmt(m.get('leads'))} leads)")
+    by_acct = (' · '.join(parts)) or "no per-account leads yet"
+    return (f"""<div style="background:#111;border-radius:8px;padding:14px 16px;margin:4px 0 16px">
+      <div style="color:#f3e6b0;font-size:15px;font-weight:700;margin-bottom:10px">
+        💰 Cost per lead (CPL) — feed this into the profitability calculator</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">{cards}</div>
+      <div style="color:#bda86a;font-size:11.5px;margin-top:10px">
+        Per-account (MTD): {by_acct}</div>
+      <div style="color:#7d7458;font-size:10.5px;margin-top:4px">
+        Use the 7-day or MTD figure (more stable than a single day). CPL = ad spend ÷ Meta leads.</div>
+    </div>""")
 
 
 def _cash_in_block(ci):

@@ -197,7 +197,7 @@ def _campaign_trend(account_id):
 def _account_block(acc):
     dates = _dates()
     out = {"name": acc["name"], "currency": acc["currency"], "id": acc["id"]}
-    for key in ("yesterday", "mtd"):
+    for key in ("yesterday", "mtd", "last7"):
         res = _insights(acc["id"], dates[key])
         if "error" in res:
             out[key] = {"error": res["error"]}
