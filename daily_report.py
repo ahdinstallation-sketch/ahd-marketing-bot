@@ -323,33 +323,17 @@ def _cash_in_block(ci):
     if not ci or not ci.get("configured") or not ci.get("ok"):
         return ""
     mlabel = esc(ci.get("month_label") or "")
-    cards = [_kpi(f"Cash in — {mlabel}", fmt(ci.get("cash_in_month"), "EGP "))]
+    cards = []
     if ci.get("cash_in_ytd"):
-        cards.append(_kpi(f"Cash in YTD {esc(ci.get('ytd_year') or '')}",
+        cards.append(_kpi(f"Total cash in ({esc(ci.get('ytd_year') or '')})",
                           fmt(ci["cash_in_ytd"], "EGP ")))
-    if ci.get("bank_balance"):
-        cards.append(_kpi("Bank balance (incl FX)", fmt(ci["bank_balance"], "EGP ")))
-    if ci.get("total_debt"):
-        cards.append(_kpi("Total debt", fmt(ci["total_debt"], "EGP ")))
-    # second line: cash out + net for the latest month
-    line2 = []
-    if ci.get("cash_out_month"):
-        line2.append(f"Cash out {fmt(ci['cash_out_month'], 'EGP ')}")
-    if ci.get("net_month") is not None:
-        net = ci["net_month"]
-        col = "#27ae60" if net >= 0 else "#c0392b"
-        line2.append(f'Net <span style="color:{col};font-weight:700">'
-                     f'{fmt(net, "EGP ")}</span>')
-    line2_html = (f'<div style="font-size:12px;color:#666;margin-top:6px">'
-                  f'{mlabel}: {" · ".join(line2)}</div>') if line2 else ""
+    cards.append(_kpi(f"Cash in — {mlabel}", fmt(ci.get("cash_in_month"), "EGP ")))
     asof = f" · as of {esc(ci['as_of'])}" if ci.get("as_of") else ""
-    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash &amp; treasury
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash in
       <span style="font-size:11px;color:#999;font-weight:400">— live from treasury dashboard{asof}</span></h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap">{''.join(cards)}</div>
-      {line2_html}
       <div style="font-size:11px;color:#999;margin-top:5px">
-        Group-level cash position (auto-updates with the Looker Studio sheet). Cash flow is
-        collection-timing, not profit.</div>""")
+        Group-level collections (auto-updates with the Looker Studio sheet).</div>""")
 
 
 def _cpl_trend(cur, prev):
