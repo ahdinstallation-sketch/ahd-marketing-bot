@@ -7,6 +7,7 @@ Importable: `from sheets_pull import pull_sheets` -> dict.
 CLI: `python3 sheets_pull.py` prints the snapshot JSON.
 """
 import os, csv, io, json, collections, datetime, re, subprocess, unicodedata
+from urllib.parse import quote as urllib_quote
 
 SHEETS = {
     "designy_leads": "1VwE90ugoXTI4_90tKXzo7PT2TXpXYxyci0Ml3g9rrqs",
@@ -28,16 +29,24 @@ AHD_LEADS_GID = "1977817316"
 # row), so column order is flexible. Degrades gracefully if unset or unreachable.
 CASHIN_SHEET_ID = os.environ.get("CASHIN_SHEET_ID", "").strip()
 CASHIN_GID = os.environ.get("CASHIN_GID", "").strip() or None
+# Per-company cash-in tab (one row per month, a column per company: AHD, Designy,
+# …, Total EGP). Read by NAME via gviz so it survives gid changes.
+CASHIN_TAB = os.environ.get("CASHIN_TAB", "Cash In by Company").strip() or None
 DISPO_KEYS = ("bad lead", "good lead", "paid measurement", "no answer",
               "over budget", "signed", "visit", "low budget", "early stage",
               "converted", "contacted")
 
 
-def fetch(idn, gid=None, retries=4):
+def fetch(idn, gid=None, retries=4, tab=None):
     import time
-    url = f"https://docs.google.com/spreadsheets/d/{idn}/export?format=csv"
-    if gid:
-        url += f"&gid={gid}"
+    if tab:
+        # Read a specific tab by NAME (stable across gid changes) via gviz.
+        url = (f"https://docs.google.com/spreadsheets/d/{idn}/gviz/tq"
+               f"?tqx=out:csv&sheet={urllib_quote(tab)}")
+    else:
+        url = f"https://docs.google.com/spreadsheets/d/{idn}/export?format=csv"
+        if gid:
+            url += f"&gid={gid}"
     last = ""
     for _ in range(retries):
         raw = subprocess.run(["curl", "-sL", "--max-time", "40", url],
@@ -382,62 +391,70 @@ def _find_col(hdr, *names):
     return None
 
 
-def pull_cash_in():
-    """Live treasury snapshot from the Looker-Studio-backed sheet (the same data
-    feeding the cash dashboard). The sheet is a GROUP-LEVEL monthly time series
-    (no per-company split), so we surface: latest month's cash-in / cash-out /
-    net, the bank balance and total debt, and the cumulative cash-in YTD.
+# Companies to surface from the cash-in tab (label -> matching header). The
+# header carries one column per company; we show the two brands + group total.
+_CASHIN_COMPANIES = [("AHD", "AHD"), ("Designy", "Designy")]
 
-    Returns {"configured", "ok", "month_label", "cash_in_month", "cash_out_month",
-    "net_month", "bank_balance", "total_debt", "cash_in_ytd", "ytd_year", "as_of"}.
-    Degrades gracefully (configured=False or ok=False) so the section just hides."""
+
+def pull_cash_in():
+    """Live per-company cash-in from the 'Cash In by Company' tab (one row per
+    month, a column per company plus Total EGP). Surfaces the latest month's
+    cash-in for AHD / Designy / Total, plus the cumulative YTD per company.
+
+    Returns {"configured", "ok", "month_label", "as_of", "ytd_year",
+             "month": {ahd, designy, total}, "ytd": {ahd, designy, total}}.
+    Degrades gracefully (configured/ok False) so the section just hides."""
     out = {"configured": bool(CASHIN_SHEET_ID), "ok": False}
     if not CASHIN_SHEET_ID:
         return out
-    rows = fetch(CASHIN_SHEET_ID, CASHIN_GID)
+    # Prefer the named per-company tab; fall back to an explicit gid if given.
+    rows = fetch(CASHIN_SHEET_ID, CASHIN_GID, tab=CASHIN_TAB if not CASHIN_GID else None)
     if not rows:
         return out
-    # Locate the header row (the one that names the Cash In column).
     hdr_i = next((i for i, r in enumerate(rows[:5])
-                  if any((c or "").strip().lower() == "cash in" for c in r)), 0)
+                  if any((c or "").strip().lower() == "total egp" for c in r)), 0)
     hdr = rows[hdr_i]
-    c_ci = _find_col(hdr, "Cash In")
-    if c_ci is None:
-        return out
-    c_co = _find_col(hdr, "Cash Out")
-    c_bal = _find_col(hdr, "Balance")
-    c_bank = _find_col(hdr, "Bank Balance including FX", "Bank Balance EGP")
-    c_debt = _find_col(hdr, "Total Debt EGP", "Total Debt")
+    c_total = _find_col(hdr, "Total EGP", "Total")
+    c_ahd = _find_col(hdr, "AHD")
+    c_des = _find_col(hdr, "Designy")
     c_yr = _find_col(hdr, "Year")
     c_mo = _find_col(hdr, "Month")
     c_dt = _find_col(hdr, "Date")
+    if c_total is None or c_ahd is None:
+        return out
 
     def cell(r, i):
         return r[i] if (i is not None and len(r) > i) else ""
 
-    latest, ytd = None, {}
+    latest, ytd = None, {"ahd": 0.0, "designy": 0.0, "total": 0.0}
     for r in rows[hdr_i + 1:]:
-        v = num(cell(r, c_ci))
-        if v <= 0:
-            continue
-        latest = r
-        yr = (cell(r, c_yr) or "").strip()
-        ytd[yr] = ytd.get(yr, 0.0) + v
+        if num(cell(r, c_total)) > 0:
+            latest = r  # last row with real money = most recent actuals
     if latest is None:
         return out
     yr = (cell(latest, c_yr) or "").strip()
+    for r in rows[hdr_i + 1:]:
+        if (cell(r, c_yr) or "").strip() != yr or num(cell(r, c_total)) <= 0:
+            continue
+        ytd["ahd"] += num(cell(r, c_ahd))
+        ytd["designy"] += num(cell(r, c_des))
+        ytd["total"] += num(cell(r, c_total))
     mo = (cell(latest, c_mo) or "").strip()
     out.update({
         "ok": True,
         "month_label": f"{mo} {yr}".strip(),
         "as_of": (cell(latest, c_dt) or "").strip() or f"{mo} {yr}".strip(),
-        "cash_in_month": round(num(cell(latest, c_ci))),
-        "cash_out_month": round(num(cell(latest, c_co))) or None,
-        "net_month": round(num(cell(latest, c_bal))) if cell(latest, c_bal) else None,
-        "bank_balance": round(num(cell(latest, c_bank))) or None,
-        "total_debt": round(num(cell(latest, c_debt))) or None,
-        "cash_in_ytd": round(ytd.get(yr, 0.0)) or None,
         "ytd_year": yr or None,
+        "month": {
+            "ahd": round(num(cell(latest, c_ahd))) or None,
+            "designy": round(num(cell(latest, c_des))) or None,
+            "total": round(num(cell(latest, c_total))) or None,
+        },
+        "ytd": {
+            "ahd": round(ytd["ahd"]) or None,
+            "designy": round(ytd["designy"]) or None,
+            "total": round(ytd["total"]) or None,
+        },
     })
     return out
 

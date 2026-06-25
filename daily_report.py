@@ -326,17 +326,33 @@ def _cash_in_block(ci):
     if not ci or not ci.get("configured") or not ci.get("ok"):
         return ""
     mlabel = esc(ci.get("month_label") or "")
+    m = ci.get("month", {}) or {}
+    y = ci.get("ytd", {}) or {}
     cards = []
-    if ci.get("cash_in_ytd"):
-        cards.append(_kpi(f"Total cash in ({esc(ci.get('ytd_year') or '')})",
-                          fmt(ci["cash_in_ytd"], "EGP ")))
-    cards.append(_kpi(f"Cash in — {mlabel}", fmt(ci.get("cash_in_month"), "EGP ")))
+    if m.get("total") is not None:
+        cards.append(_kpi(f"Total cash in — {mlabel}", fmt(m["total"], "EGP ")))
+    if m.get("ahd") is not None:
+        cards.append(_kpi(f"AHD — {mlabel}", fmt(m["ahd"], "EGP ")))
+    if m.get("designy") is not None:
+        cards.append(_kpi(f"Designy — {mlabel}", fmt(m["designy"], "EGP ")))
+    # YTD-per-company subline
+    yparts = []
+    if y.get("total") is not None:
+        yparts.append(f"Total <b>{fmt(y['total'], 'EGP ')}</b>")
+    if y.get("ahd") is not None:
+        yparts.append(f"AHD <b>{fmt(y['ahd'], 'EGP ')}</b>")
+    if y.get("designy") is not None:
+        yparts.append(f"Designy <b>{fmt(y['designy'], 'EGP ')}</b>")
+    yline = (f'<div style="font-size:12px;color:#666;margin-top:6px">'
+             f'YTD {esc(ci.get("ytd_year") or "")}: {" · ".join(yparts)}</div>') if yparts else ""
     asof = f" · as of {esc(ci['as_of'])}" if ci.get("as_of") else ""
-    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash in
-      <span style="font-size:11px;color:#999;font-weight:400">— live from treasury dashboard{asof}</span></h3>
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash in by company
+      <span style="font-size:11px;color:#999;font-weight:400">— live from treasury sheet{asof}</span></h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap">{''.join(cards)}</div>
+      {yline}
       <div style="font-size:11px;color:#999;margin-top:5px">
-        Group-level collections (auto-updates with the Looker Studio sheet).</div>""")
+        Collections by company (auto-updates with the sheet). Cash flow is collection-timing,
+        not profit.</div>""")
 
 
 def _cpl_trend(cur, prev):

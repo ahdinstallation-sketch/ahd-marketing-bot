@@ -16,18 +16,20 @@ no laptop or app needs to be open.
   email, sends via Gmail SMTP. Guarded to send only at 09:00 Cairo (DST-safe).
 - `.github/workflows/daily-marketing-email.yml` — the daily cloud schedule.
 
-## Live "cash in to date"
-The report shows **AHD cash in to date** (and Designy, if present) pulled live from the
-Google Sheet that feeds the Looker Studio treasury dashboard — so it auto-updates. Point
-the job at that sheet with env vars / repo secrets:
-- `CASHIN_SHEET_ID` — the sheet ID (must be readable as published CSV: File → Share →
-  Publish to web, or "Anyone with the link – Viewer").
-- `CASHIN_GID` — (optional) the specific tab's gid.
+## Live "cash in by company"
+The report shows **cash in by company** (Total / AHD / Designy, latest month + YTD) pulled
+live from the treasury sheet's **"Cash In by Company"** tab — so it auto-updates. Point the
+job at that sheet with env vars / repo secrets:
+- `CASHIN_SHEET_ID` — the sheet ID (must be readable: File → Share → "Anyone with the link –
+  Viewer", or Publish to web).
+- `CASHIN_TAB` — (optional) the tab name to read; defaults to `Cash In by Company`. Read by
+  name via the gviz endpoint, so it survives gid changes.
+- `CASHIN_GID` — (optional) read a specific tab gid instead of by name.
 
-Expected layout: a simple label/value table, one row per company, e.g.
-`AHD cash in to date , 5,430,000` / `Designy cash in to date , 1,330,000` /
-`As of , 2026-06-25`. Matching is fuzzy (row containing "ahd"/"designy" → its largest
-number), so column order is flexible. The section is hidden if `CASHIN_SHEET_ID` is unset.
+Expected layout: a monthly table with a header row containing `AHD`, `Designy`, … and
+`Total EGP`, one row per month (a `Year` + `Month` column). The latest row with a non-zero
+`Total EGP` is treated as the most recent actuals; YTD sums all rows of that year. The
+section is hidden if `CASHIN_SHEET_ID` is unset.
 
 ## Secrets (GitHub repo → Settings → Secrets and variables → Actions)
 | Secret | What |
