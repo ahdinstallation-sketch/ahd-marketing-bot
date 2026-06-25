@@ -343,35 +343,71 @@ def analyze_ahd_leads(rows, gid_note=""):
     return out
 
 
-def _row_max_num(cells):
-    vals = [num(c) for c in cells if num(c) > 0]
-    return max(vals) if vals else None
+def _find_col(hdr, *names):
+    for i, h in enumerate(hdr):
+        hl = (h or "").strip().lower()
+        if any(hl == n.lower() for n in names):
+            return i
+    return None
 
 
 def pull_cash_in():
-    """Live cash-in-to-date per company from the Looker-Studio-backed sheet.
-    Returns {"configured", "ahd", "designy", "as_of"}; degrades to unconfigured."""
-    out = {"configured": bool(CASHIN_SHEET_ID), "ahd": None,
-           "designy": None, "as_of": None}
+    """Live treasury snapshot from the Looker-Studio-backed sheet (the same data
+    feeding the cash dashboard). The sheet is a GROUP-LEVEL monthly time series
+    (no per-company split), so we surface: latest month's cash-in / cash-out /
+    net, the bank balance and total debt, and the cumulative cash-in YTD.
+
+    Returns {"configured", "ok", "month_label", "cash_in_month", "cash_out_month",
+    "net_month", "bank_balance", "total_debt", "cash_in_ytd", "ytd_year", "as_of"}.
+    Degrades gracefully (configured=False or ok=False) so the section just hides."""
+    out = {"configured": bool(CASHIN_SHEET_ID), "ok": False}
     if not CASHIN_SHEET_ID:
         return out
     rows = fetch(CASHIN_SHEET_ID, CASHIN_GID)
-    for r in rows:
-        if not r:
+    if not rows:
+        return out
+    # Locate the header row (the one that names the Cash In column).
+    hdr_i = next((i for i, r in enumerate(rows[:5])
+                  if any((c or "").strip().lower() == "cash in" for c in r)), 0)
+    hdr = rows[hdr_i]
+    c_ci = _find_col(hdr, "Cash In")
+    if c_ci is None:
+        return out
+    c_co = _find_col(hdr, "Cash Out")
+    c_bal = _find_col(hdr, "Balance")
+    c_bank = _find_col(hdr, "Bank Balance including FX", "Bank Balance EGP")
+    c_debt = _find_col(hdr, "Total Debt EGP", "Total Debt")
+    c_yr = _find_col(hdr, "Year")
+    c_mo = _find_col(hdr, "Month")
+    c_dt = _find_col(hdr, "Date")
+
+    def cell(r, i):
+        return r[i] if (i is not None and len(r) > i) else ""
+
+    latest, ytd = None, {}
+    for r in rows[hdr_i + 1:]:
+        v = num(cell(r, c_ci))
+        if v <= 0:
             continue
-        label = " ".join(c for c in r[:2]).strip().lower()
-        rowmax = _row_max_num(r)
-        if "ahd" in label and out["ahd"] is None and rowmax:
-            out["ahd"] = rowmax
-        elif "designy" in label and out["designy"] is None and rowmax:
-            out["designy"] = rowmax
-        elif out["as_of"] is None and any(
-                k in label for k in ("as of", "as at", "updated", "refresh")):
-            for c in r[1:]:
-                # a date-like value: has a digit and a separator
-                if c and any(ch.isdigit() for ch in c) and re.search(r"[-/]", c):
-                    out["as_of"] = c.strip()
-                    break
+        latest = r
+        yr = (cell(r, c_yr) or "").strip()
+        ytd[yr] = ytd.get(yr, 0.0) + v
+    if latest is None:
+        return out
+    yr = (cell(latest, c_yr) or "").strip()
+    mo = (cell(latest, c_mo) or "").strip()
+    out.update({
+        "ok": True,
+        "month_label": f"{mo} {yr}".strip(),
+        "as_of": (cell(latest, c_dt) or "").strip() or f"{mo} {yr}".strip(),
+        "cash_in_month": round(num(cell(latest, c_ci))),
+        "cash_out_month": round(num(cell(latest, c_co))) or None,
+        "net_month": round(num(cell(latest, c_bal))) if cell(latest, c_bal) else None,
+        "bank_balance": round(num(cell(latest, c_bank))) or None,
+        "total_debt": round(num(cell(latest, c_debt))) or None,
+        "cash_in_ytd": round(ytd.get(yr, 0.0)) or None,
+        "ytd_year": yr or None,
+    })
     return out
 
 
