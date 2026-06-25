@@ -1,0 +1,2 @@
+# stdlib-only at runtime; this file keeps the Actions step explicit and future-proof.
+# (urllib/smtplib/csv are all stdlib — no third-party deps required today.)

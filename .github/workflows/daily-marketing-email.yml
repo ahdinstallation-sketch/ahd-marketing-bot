@@ -1,0 +1,41 @@
+name: Daily Marketing Email
+
+on:
+  workflow_dispatch: {}        # manual "Run workflow" button
+  schedule:
+    # GitHub cron is UTC. 06:07 UTC ≈ 09:07 Cairo (UTC+3 DST) / 08:07 (UTC+2).
+    # We also run at 07:07 UTC so one of them is 09:xx Cairo year-round; the
+    # script's Cairo-hour guard ensures it only SENDS at 09:00 Cairo.
+    - cron: "7 6 * * *"
+    - cron: "7 7 * * *"
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Build and send daily report
+        env:
+          META_TOKEN: ${{ secrets.META_TOKEN }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+        # On manual dispatch we --force (send regardless of hour); on schedule the
+        # Cairo-hour guard inside the script decides whether to actually send.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python daily_report.py --force
+          else
+            python daily_report.py
+          fi
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-html
+          path: report.html
+          if-no-files-found: ignore
