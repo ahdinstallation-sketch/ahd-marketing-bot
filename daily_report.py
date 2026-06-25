@@ -229,6 +229,7 @@ def render(ctx):
 
     # 5d) lead → sales journey: leads matched by name to tracker clients
     P.append(_lead_journey_block(sheets.get("lead_journey")))
+    P.append(_lead_relatives_block(sheets.get("lead_relatives")))
 
     # 6) pipeline leaks (from sheets) — limited to the recency window
     tr = sheets.get("ahd_tracker", {}) or {}
@@ -531,6 +532,39 @@ def _lead_journey_block(journey):
       <div style="font-size:11px;color:#999;margin-top:4px">
         Names matched between the lead-ads feed and the sales tracker (the list sales keeps
         after a measurement). Conservative matching — only confident name links are shown.</div>""")
+
+
+def _lead_relatives_block(relatives):
+    """New leads that share a family surname with an EXISTING tracker client but
+    have a different first name — likely relatives / same household (e.g. a
+    father already a client, the daughter just filled a lead form). Surfaced as a
+    warm-intro hint, explicitly NOT claimed to be the same person."""
+    if not relatives:
+        return ""
+    rows = []
+    for j in relatives[:8]:
+        ago = f"{j['lead_days_ago']}d ago" if isinstance(j.get("lead_days_ago"), int) else ""
+        tier = j.get("tier") or ""
+        rel_status = j.get("status") or "in tracker"
+        amt = f" · {esc(j['amount'])}" if j.get("amount") else ""
+        rep = f" · rep {esc(j['rep'])}" if j.get("rep") else ""
+        rows.append(f"""<div style="border-left:3px solid #b8860b;padding:5px 10px;
+          margin:4px 0;background:#fffdf6;font-size:12.5px">
+          <b>{esc(j.get('name'))}</b>
+          {('<span style="background:#888;color:#fff;border-radius:3px;padding:0 5px;font-size:10px">'+esc(tier)+'</span>') if tier else ''}
+          {('· <a href="tel:'+esc(j['phone'])+'">'+esc(j['phone'])+'</a>') if j.get('phone') else ''}
+          <span style="color:#aaa">{esc(ago)}</span><br>
+          <span style="color:#444">New lead: {esc(j.get('interest') or '?')} ·
+          {esc(j.get('when') or '?')} · {esc(j.get('compound') or 'no compound')}</span><br>
+          <span style="color:#8a6d0b;font-weight:600">Same family as
+          {esc(j.get('relative'))}</span> (existing client — {esc(rel_status)}){amt}{rep}</div>""")
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">👪 Possible relatives of existing clients
+      <span style="font-size:11px;color:#999;font-weight:400">— {len(relatives)} lead(s) sharing a
+      family surname</span></h3>{''.join(rows)}
+      <div style="font-size:11px;color:#999;margin-top:4px">
+        Same family surname as someone already in the tracker, but a different first name — likely a
+        relative / same household, <b>not the same person</b>. Worth a warm intro: ask the rep who
+        knows the family.</div>""")
 
 
 def _leak_block(title, deals, color):
