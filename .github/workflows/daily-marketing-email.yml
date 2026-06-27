@@ -1,7 +1,12 @@
 name: Daily Marketing Email
 
 on:
-  workflow_dispatch: {}        # manual "Run workflow" button
+  workflow_dispatch:           # manual "Run workflow" button + external pinger
+    inputs:
+      force:
+        description: "Send now, ignoring the 09:00–21:00 Cairo window + once-per-day dedupe"
+        type: boolean
+        default: true           # manual button = test send; the pinger passes false
   schedule:
     # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
     # fire several times across the morning so at least one lands in the send
@@ -44,10 +49,11 @@ jobs:
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
           CASHIN_SHEET_ID: ${{ secrets.CASHIN_SHEET_ID }}
           CASHIN_GID: ${{ secrets.CASHIN_GID }}
-        # On manual dispatch we --force (send now, ignore window + dedupe); on
-        # schedule the script's send-window + once-per-day guard decides.
+        # Manual dispatch with force=true → send now (test). The external pinger
+        # dispatches with force=false, so it (like the schedule) goes through the
+        # script's 09:00–21:00 window + once-per-day dedupe — no duplicate sends.
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
             python daily_report.py --force
           else
             python daily_report.py
