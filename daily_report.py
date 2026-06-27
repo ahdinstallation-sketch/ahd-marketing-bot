@@ -22,6 +22,10 @@ Usage:
 import os, sys, json, html, datetime, smtplib, ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover (Python < 3.9)
+    ZoneInfo = None
 
 from meta_pull import pull_meta
 from sheets_pull import pull_sheets
@@ -33,6 +37,11 @@ DEFAULT_RECIPIENTS = [
     "nourannoor4@gmail.com",
 ]
 SEND_HOUR_CAIRO = 9
+# GitHub's free cron scheduler is best-effort and can fire hours late, so we accept
+# any run from 09:00 up to (but not including) this hour, and dedupe to once/day.
+SEND_WINDOW_END_CAIRO = 21
+# Once-per-Cairo-day send marker (persisted across GitHub Actions runs via actions/cache).
+SENT_MARKER = os.environ.get("SENT_MARKER") or os.path.join(HERE, ".sent_marker")
 # Pipeline-leak recency window. Default ~6 months; override with PIPELINE_LEAK_DAYS.
 LEAK_WINDOW_DAYS = int(os.environ.get("PIPELINE_LEAK_DAYS", "180") or 180)
 
@@ -44,7 +53,32 @@ def _recent(deals, days=LEAK_WINDOW_DAYS):
 
 
 def cairo_now():
+    """Current local time in Cairo as a naive datetime (DST-correct via zoneinfo;
+    falls back to the old fixed UTC+3 if the tz database is unavailable)."""
+    if ZoneInfo is not None:
+        try:
+            return datetime.datetime.now(ZoneInfo("Africa/Cairo")).replace(tzinfo=None)
+        except Exception:
+            pass
     return datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+
+
+def already_sent_today():
+    """True if we already sent today's email (marker holds today's Cairo date)."""
+    try:
+        with open(SENT_MARKER, encoding="utf-8") as fh:
+            return fh.read().strip() == cairo_now().date().isoformat()
+    except OSError:
+        return False
+
+
+def mark_sent_today():
+    """Record that today's email went out, so other same-day runs skip it."""
+    try:
+        with open(SENT_MARKER, "w", encoding="utf-8") as fh:
+            fh.write(cairo_now().date().isoformat())
+    except OSError as exc:
+        print(f"Warning: could not write sent-marker {SENT_MARKER}: {exc}")
 
 
 def fmt(n, prefix="", suffix=""):
@@ -678,11 +712,18 @@ def main():
     if dry:
         print("DRY RUN — not sending.")
         return 0
-    if not force and cairo_now().hour != SEND_HOUR_CAIRO:
-        print(f"Cairo hour is {cairo_now().hour}, not {SEND_HOUR_CAIRO} — skipping send "
-              f"(use --force to override).")
-        return 0
+    if not force:
+        if already_sent_today():
+            print("Already sent today — skipping (dedupe).")
+            return 0
+        hour = cairo_now().hour
+        if not (SEND_HOUR_CAIRO <= hour < SEND_WINDOW_END_CAIRO):
+            print(f"Cairo hour is {hour}, outside the send window "
+                  f"{SEND_HOUR_CAIRO}:00–{SEND_WINDOW_END_CAIRO}:00 — skipping "
+                  f"(use --force to override).")
+            return 0
     send_email(subject, html_body, recipients)
+    mark_sent_today()
     return 0
 
 

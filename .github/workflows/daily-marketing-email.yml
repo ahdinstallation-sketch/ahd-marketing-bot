@@ -3,11 +3,18 @@ name: Daily Marketing Email
 on:
   workflow_dispatch: {}        # manual "Run workflow" button
   schedule:
-    # GitHub cron is UTC. 06:07 UTC ≈ 09:07 Cairo (UTC+3 DST) / 08:07 (UTC+2).
-    # We also run at 07:07 UTC so one of them is 09:xx Cairo year-round; the
-    # script's Cairo-hour guard ensures it only SENDS at 09:00 Cairo.
-    - cron: "7 6 * * *"
-    - cron: "7 7 * * *"
+    # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
+    # fire several times across the morning so at least one lands in the send
+    # window; the script sends on the first run at/after 09:00 Cairo and dedupes
+    # to once per day (marker persisted via actions/cache below). Times are Cairo
+    # DST (UTC+3): 09:05, 09:35, 10:05, 10:35, 11:05, 12:05, 14:05.
+    - cron: "5 6 * * *"
+    - cron: "35 6 * * *"
+    - cron: "5 7 * * *"
+    - cron: "35 7 * * *"
+    - cron: "5 8 * * *"
+    - cron: "5 9 * * *"
+    - cron: "5 11 * * *"
 
 jobs:
   send:
@@ -18,6 +25,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
+      - name: Compute Cairo date
+        run: echo "CAIRO_DATE=$(TZ=Africa/Cairo date +%F)" >> "$GITHUB_ENV"
+      - name: Restore once-per-day send marker
+        # First run of the Cairo day misses (script sends + writes the marker, which
+        # is saved to cache at job end). Later same-day runs hit and the script skips.
+        uses: actions/cache@v4
+        with:
+          path: .sent_marker
+          key: sent-${{ env.CAIRO_DATE }}
       - name: Build and send daily report
         env:
           META_TOKEN: ${{ secrets.META_TOKEN }}
@@ -28,8 +44,8 @@ jobs:
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
           CASHIN_SHEET_ID: ${{ secrets.CASHIN_SHEET_ID }}
           CASHIN_GID: ${{ secrets.CASHIN_GID }}
-        # On manual dispatch we --force (send regardless of hour); on schedule the
-        # Cairo-hour guard inside the script decides whether to actually send.
+        # On manual dispatch we --force (send now, ignore window + dedupe); on
+        # schedule the script's send-window + once-per-day guard decides.
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python daily_report.py --force

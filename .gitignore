@@ -1,4 +1,5 @@
 report.html
+.sent_marker
 *.json
 .env
 .secrets
