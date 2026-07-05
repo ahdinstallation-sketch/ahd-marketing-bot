@@ -32,9 +32,15 @@ PAGES = [
     {"id": "2690515210977549", "name": "Korsagy"},
 ]
 
-# Lead-type actions we count as "leads" across objectives.
-LEAD_ACTIONS = {"lead", "onsite_conversion.lead_grouped", "leadgen_grouped",
-                "offsite_conversion.fb_pixel_lead", "onsite_conversion.messaging_conversation_started_7d"}
+# Meta reports the SAME lead submission under several action_types — for a
+# Facebook form lead, `lead`, `onsite_conversion.lead_grouped` and
+# `leadgen_grouped` are all the same number. SUMMING them double/triple-counts
+# (that was the "leads yesterday" bug). Instead we take ONE canonical count in
+# priority order, which matches the "Leads" figure in Ads Manager. We deliberately
+# EXCLUDE messaging conversations — those are Messenger chats, not form leads, and
+# they inflate the count.
+LEAD_ACTION_PRIORITY = ("lead", "onsite_conversion.lead_grouped",
+                        "leadgen_grouped", "offsite_conversion.fb_pixel_lead")
 
 
 def _get(path, params, token=None):
@@ -85,11 +91,18 @@ def _f(d, k, default=0.0):
 
 
 def _leads_from_actions(row):
-    n = 0.0
+    """Deduplicated lead count that matches Ads Manager's "Leads": take the first
+    lead action_type present (in priority order) instead of summing — Meta lists
+    the same submission under multiple action_types, so summing over-counts."""
+    acts = {}
     for a in row.get("actions", []) or []:
-        if a.get("action_type") in LEAD_ACTIONS:
-            n += _f(a, "value")
-    return n
+        t = a.get("action_type")
+        if t:
+            acts[t] = _f(a, "value")
+    for t in LEAD_ACTION_PRIORITY:
+        if t in acts:
+            return acts[t]
+    return 0.0
 
 
 def _insights(account_id, time_range, level="account"):

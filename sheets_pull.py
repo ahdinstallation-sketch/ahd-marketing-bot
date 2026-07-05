@@ -527,58 +527,6 @@ def correlate_leads_tracker(leads_detail, clients_detail):
     return out
 
 
-def find_lead_relatives(leads_detail, clients_detail, matched_names=None):
-    """Catch *relatives*, not the same person: a new lead sharing a distinctive
-    family surname with an existing tracker client, but a DIFFERENT first name
-    (e.g. Hana El Gohary vs. Khaled El Gohary — father & daughter). The sales
-    team wants this household signal even though it's two different people, so we
-    surface it separately and label it as a possible relative — never merging it
-    into the same-person journey. Kept conservative: the shared surname must be a
-    distinctive (non-common-particle) token of >=4 letters, and it must sit in the
-    SURNAME position (last name) of both — Egyptian names chain the father's given
-    name mid-string, so matching any shared token links coincidental given names
-    (e.g. "Hala Hatim El Kady" vs "Hatim Samir"). Requiring a shared LAST name
-    keeps it to true family surnames (e.g. ...El Gohary vs ...El Gohary)."""
-    if not leads_detail or not clients_detail:
-        return []
-    matched = matched_names or set()
-    ct = [(c, _name_tokens(c.get("client", ""))) for c in clients_detail]
-    out = []
-    seen = set()
-    for l in leads_detail:
-        name = l.get("name") or ""
-        if name in matched:                    # already a confident same-person hit
-            continue
-        lt = _name_tokens(name)
-        if len(lt) < 2:
-            continue
-        for c, ctok in ct:
-            if len(ctok) < 2 or lt[0] == ctok[0]:   # need a DIFFERENT first name
-                continue
-            surname = lt[-1]                         # last name = family surname
-            if (surname != ctok[-1] or surname in _NAME_COMMON
-                    or len(surname) < 4):
-                continue
-            key = (name, c.get("client"))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({
-                "name": name, "phone": l.get("phone"), "tier": l.get("tier"),
-                "interest": l.get("interest"), "when": l.get("when"),
-                "compound": l.get("compound"), "campaign": l.get("campaign"),
-                "lead_date": l.get("date"), "lead_days_ago": l.get("days_ago"),
-                "surname": surname.title(),
-                "relative": c.get("client"), "status": c.get("status") or "",
-                "stage": c.get("stage") or "", "amount": c.get("amount") or "",
-                "rep": c.get("rep") or "",
-            })
-            break                              # one relative link per lead is enough
-    out.sort(key=lambda d: (d["lead_days_ago"] is None,
-                            d["lead_days_ago"] if d["lead_days_ago"] is not None else 0))
-    return out
-
-
 def pull_sheets():
     snap = {"pulled_at": datetime.datetime.now().isoformat(timespec="seconds")}
     snap["designy_leads"] = analyze_leads(fetch(SHEETS["designy_leads"]))
@@ -591,12 +539,6 @@ def pull_sheets():
     snap["lead_journey"] = correlate_leads_tracker(
         snap["ahd_leads"].get("leads_detail", []),
         snap["ahd_tracker"].get("clients_detail", []))
-    # Relatives of existing clients (same family surname, different first name) —
-    # a household signal the sales team wants, kept separate from same-person hits.
-    snap["lead_relatives"] = find_lead_relatives(
-        snap["ahd_leads"].get("leads_detail", []),
-        snap["ahd_tracker"].get("clients_detail", []),
-        matched_names={m.get("name") for m in snap["lead_journey"]})
     # Drop the bulky working lists (full names/phones) now that matching is done.
     snap["ahd_leads"].pop("leads_detail", None)
     snap["ahd_tracker"].pop("clients_detail", None)

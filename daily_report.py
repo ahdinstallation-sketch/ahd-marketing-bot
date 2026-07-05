@@ -263,29 +263,6 @@ def render(ctx):
 
     # 5d) lead → sales journey: leads matched by name to tracker clients
     P.append(_lead_journey_block(sheets.get("lead_journey")))
-    P.append(_lead_relatives_block(sheets.get("lead_relatives")))
-
-    # 6) pipeline leaks (from sheets) — limited to the recency window
-    tr = sheets.get("ahd_tracker", {}) or {}
-    win = LEAK_WINDOW_DAYS
-    months = max(1, round(win / 30))
-    P.append(f"""<h3 style="margin:18px 0 6px;font-size:15px">Pipeline leaks — money at risk
-      <span style="font-size:11px;color:#999;font-weight:400">— last {months} month{'s' if months!=1 else ''} (by offer/session date)</span></h3>""")
-    leaks = [
-        ("OVER BUDGET — re-spec to budget / cheque plan, don't blanket-discount",
-         _recent(tr.get("over_budget", []), win), "#e67e22"),
-        ("NO ANSWER AFTER OFFER — re-contact within 48h",
-         _recent(tr.get("no_answer_after_offer", []), win), "#8e44ad"),
-        ("CONTRACTED, NO ORDER — chase to deposit/production",
-         _recent(tr.get("contracted_no_order", []), win), "#2980b9"),
-    ]
-    if any(d for _, d, _ in leaks):
-        for title, deals, color in leaks:
-            P.append(_leak_block(title, deals, color))
-    else:
-        P.append(f"""<div style="font-size:12px;color:#888">No pipeline leaks dated within
-          the last {win} days. (Older flagged deals exist but fall outside the window — widen
-          it with PIPELINE_LEAK_DAYS if you want them surfaced.)</div>""")
 
     # leads snapshot
     dl = sheets.get("designy_leads", {}) or {}
@@ -478,17 +455,12 @@ def _lead_intel_block(li):
     P = [f"""<h3 style="margin:18px 0 6px;font-size:15px">🎯 Lead intelligence — brand fit & who to call
       <span style="font-size:11px;color:#999;font-weight:400">— {fmt(li['total'])} leads scored ·
       {fmt(li['last7'])} new last 7d</span></h3>"""]
-    # tier summary + unworked warning
+    # tier summary
     P.append(f"""<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
       {_kpi('🟢 Tier A (call now)', fmt(t['A']))}
       {_kpi('🟡 Tier B (today)', fmt(t['B']))}
       {_kpi('⚪ Tier C (nurture)', fmt(t['C']))}
     </div>""")
-    if li.get("unworked"):
-        P.append(f"""<div style="background:#fdf6f5;border:1px solid #f0d4cf;border-radius:6px;
-          padding:8px 12px;font-size:12.5px;color:#a33;margin-bottom:8px">
-          ⚠ <b>{fmt(li['unworked'])}</b> of {fmt(li['total'])} leads still show status CREATED
-          (un-worked in the feed) — speed-to-lead is the #1 fixable leak.</div>""")
     # breakdowns
     def chips(d):
         return " · ".join(f"{esc(k)} <b>{v}</b>" for k, v in d.items())
@@ -566,56 +538,6 @@ def _lead_journey_block(journey):
       <div style="font-size:11px;color:#999;margin-top:4px">
         Names matched between the lead-ads feed and the sales tracker (the list sales keeps
         after a measurement). Conservative matching — only confident name links are shown.</div>""")
-
-
-def _lead_relatives_block(relatives):
-    """New leads that share a family surname with an EXISTING tracker client but
-    have a different first name — likely relatives / same household (e.g. a
-    father already a client, the daughter just filled a lead form). Surfaced as a
-    warm-intro hint, explicitly NOT claimed to be the same person."""
-    if not relatives:
-        return ""
-    rows = []
-    for j in relatives[:8]:
-        ago = f"{j['lead_days_ago']}d ago" if isinstance(j.get("lead_days_ago"), int) else ""
-        tier = j.get("tier") or ""
-        rel_status = j.get("status") or "in tracker"
-        amt = f" · {esc(j['amount'])}" if j.get("amount") else ""
-        rep = f" · rep {esc(j['rep'])}" if j.get("rep") else ""
-        rows.append(f"""<div style="border-left:3px solid #b8860b;padding:5px 10px;
-          margin:4px 0;background:#fffdf6;font-size:12.5px">
-          <b>{esc(j.get('name'))}</b>
-          {('<span style="background:#888;color:#fff;border-radius:3px;padding:0 5px;font-size:10px">'+esc(tier)+'</span>') if tier else ''}
-          {('· <a href="tel:'+esc(j['phone'])+'">'+esc(j['phone'])+'</a>') if j.get('phone') else ''}
-          <span style="color:#aaa">{esc(ago)}</span><br>
-          <span style="color:#444">New lead: {esc(j.get('interest') or '?')} ·
-          {esc(j.get('when') or '?')} · {esc(j.get('compound') or 'no compound')}</span><br>
-          <span style="color:#8a6d0b;font-weight:600">Same family as
-          {esc(j.get('relative'))}</span> (existing client — {esc(rel_status)}){amt}{rep}</div>""")
-    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">👪 Possible relatives of existing clients
-      <span style="font-size:11px;color:#999;font-weight:400">— {len(relatives)} lead(s) sharing a
-      family surname</span></h3>{''.join(rows)}
-      <div style="font-size:11px;color:#999;margin-top:4px">
-        Same family surname as someone already in the tracker, but a different first name — likely a
-        relative / same household, <b>not the same person</b>. Worth a warm intro: ask the rep who
-        knows the family.</div>""")
-
-
-def _leak_block(title, deals, color):
-    if not deals:
-        return ""
-    rows = []
-    for d in deals[:6]:
-        amt = d.get("amount") or ""
-        ago = d.get("days_ago")
-        age = f"· {ago}d ago" if isinstance(ago, int) else ""
-        rows.append(f"""<div style="font-size:12.5px;padding:2px 0">
-          • <b>{esc(d.get('client'))}</b> {('· '+esc(amt)) if amt else ''}
-          {('· '+esc(d.get('rep'))) if d.get('rep') else ''}
-          <span style="color:#aaa">{age}</span></div>""")
-    return (f'<div style="border-left:3px solid {color};padding:6px 10px;margin:6px 0">'
-            f'<div style="font-weight:600;font-size:13px">{esc(title)} '
-            f'<span style="color:#888">({len(deals)})</span></div>{"".join(rows)}</div>')
 
 
 def pick_focus(ctx):
