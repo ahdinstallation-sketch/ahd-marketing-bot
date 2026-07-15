@@ -506,6 +506,21 @@ def _lead_intel_block(li):
     return "".join(P)
 
 
+# Funnel ladder (ascending) → (progress %, short label, emoji). The furthest TRUE
+# checkbox on a client row is their real position, so we read `stage` (which the
+# roll-up fills for grouped clients like Farida) as the PRIMARY state — not the
+# free-text STATUS column, which is often blank on a rolled-up parent row.
+_FUNNEL_STEPS = [
+    ("SESSION", 17, "Session booked", "🗓️"),
+    ("OFFER", 33, "Offer sent", "💬"),
+    ("INITIAL PRESENTATION", 50, "Initial design", "🎨"),
+    ("FINAL PRESENTATION AFTER CLIENT COMMENTS", 67, "Final design", "✏️"),
+    ("CONTRACTED", 83, "CONTRACTED", "✍️"),
+    ("ORDER", 100, "WON — in production", "🏆"),
+]
+_FUNNEL_PCT = {name: (pct, label, emoji) for name, pct, label, emoji in _FUNNEL_STEPS}
+
+
 def _lead_journey_block(journey):
     """Leads matched by name to clients in the sales tracker — the closed loop:
     which Facebook leads actually became tracked clients, and where each stands
@@ -514,38 +529,106 @@ def _lead_journey_block(journey):
         return ('<h3 style="margin:18px 0 6px;font-size:15px">🔗 Lead → sales journey</h3>'
                 '<div style="font-size:12px;color:#888">No lead names matched tracker clients '
                 'yet (names must match closely to link safely).</div>')
-    # status → colour so at-risk matches stand out
-    def scol(st):
-        s = (st or "").upper()
-        if "SIGNED" in s or "ORDER" in s:
-            return "#27ae60"
-        if "OVER BUDGET" in s or "NO ANSWER" in s:
-            return "#c0392b"
-        return "#2980b9"
+
+    def _resolve(j):
+        """Return (pct, label, emoji, colour, at_risk) for a matched lead.
+        Primary state = furthest funnel stage reached; STATUS only flags risk."""
+        stage = (j.get("stage") or "").upper().strip()
+        status = (j.get("status") or "").upper()
+        at_risk = "OVER BUDGET" in status or "NO ANSWER" in status
+        pct, label, emoji = _FUNNEL_PCT.get(stage, (0, "", ""))
+        if not label:                       # in tracker but no checkbox yet
+            pct, label, emoji = 8, "New — in tracker", "🌱"
+        # colour band by progress / risk
+        if pct >= 83:
+            colour = "#1e8e4e"              # green — contracted / won
+        elif pct >= 50:
+            colour = "#c9871f"              # amber — mid-funnel, designing
+        else:
+            colour = "#2980b9"             # blue — early
+        if at_risk:
+            colour = "#c0392b"             # red overrides — needs rescue
+        return pct, label, emoji, colour, at_risk
+
+    # ---- headline conversion scoreboard (motivational) ----
+    n = len(journey)
+    won = sum(1 for j in journey if (j.get("stage") or "").upper() in ("CONTRACTED", "ORDER"))
+    in_play = sum(1 for j in journey
+                  if (j.get("stage") or "").upper() in
+                  ("OFFER", "INITIAL PRESENTATION",
+                   "FINAL PRESENTATION AFTER CLIENT COMMENTS", "SESSION"))
+    conv = round(100 * won / n) if n else 0
+
+    def _amt_num(j):
+        try:
+            return float(str(j.get("amount") or "0").replace(",", "") or 0)
+        except ValueError:
+            return 0.0
+    won_value = sum(_amt_num(j) for j in journey
+                    if (j.get("stage") or "").upper() in ("CONTRACTED", "ORDER"))
+    won_value_str = f"{won_value:,.0f}" if won_value else ""
+
+    scoreboard = f"""
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+      style="margin:6px 0 10px;border-collapse:separate;border-spacing:6px 0">
+      <tr>
+        <td width="33%" style="background:#e9f7ef;border:1px solid #b7e2c8;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#1e8e4e;line-height:1">{conv}%</div>
+          <div style="font-size:10.5px;color:#3a6b4e;text-transform:uppercase;letter-spacing:.4px">
+            Lead→contract</div></td>
+        <td width="33%" style="background:#fdf3e2;border:1px solid #f0d9a8;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#c9871f;line-height:1">{won} <span
+            style="font-size:13px;color:#8a6a2a">/ {n}</span></div>
+          <div style="font-size:10.5px;color:#8a6a2a;text-transform:uppercase;letter-spacing:.4px">
+            Leads won</div></td>
+        <td width="33%" style="background:#eef4fb;border:1px solid #c3ddf3;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#2471b3;line-height:1">{in_play}</div>
+          <div style="font-size:10.5px;color:#2c5a83;text-transform:uppercase;letter-spacing:.4px">
+            Still in play</div></td>
+      </tr>
+    </table>
+    {(f'<div style="font-size:12px;color:#1e8e4e;font-weight:600;margin:-4px 0 8px">'
+      f'💰 {won_value_str} EGP already contracted from Facebook leads.</div>') if won_value_str else ''}"""
+
     rows = []
-    for j in journey[:12]:
-        stage = j.get("stage") or ""
-        status = j.get("status") or "(in tracker, no status)"
-        amt = f" · {esc(j['amount'])}" if j.get("amount") else ""
+    for j in sorted(journey[:12], key=lambda x: -_resolve(x)[0]):
+        pct, label, emoji, colour, at_risk = _resolve(j)
+        amt = f" · <b>{esc(j['amount'])}</b>" if j.get("amount") else ""
         rep = f" · rep {esc(j['rep'])}" if j.get("rep") else ""
         ago = f"{j['lead_days_ago']}d ago" if isinstance(j.get("lead_days_ago"), int) else ""
         tier = j.get("tier") or ""
-        rows.append(f"""<div style="border-left:3px solid {scol(status)};padding:5px 10px;
-          margin:4px 0;background:#fcfcfa;font-size:12.5px">
-          <b>{esc(j.get('name') or j.get('client'))}</b>
-          {('<span style="background:#888;color:#fff;border-radius:3px;padding:0 5px;font-size:10px">'+esc(tier)+'</span>') if tier else ''}
-          {('· <a href="tel:'+esc(j['phone'])+'">'+esc(j['phone'])+'</a>') if j.get('phone') else ''}<br>
-          <span style="color:#444">Lead: {esc(j.get('interest') or '?')} ·
+        risk_badge = ('<span style="background:#c0392b;color:#fff;border-radius:3px;'
+                      'padding:1px 6px;font-size:10px;font-weight:700">⚠ '
+                      + esc((j.get("status") or "").title()) + '</span>') if at_risk else ''
+        # a slim progress bar so the funnel position reads at a glance
+        bar = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+               f'style="margin:5px 0 2px"><tr>'
+               f'<td style="background:#ececec;border-radius:5px;height:8px;padding:0">'
+               f'<div style="background:{colour};width:{pct}%;height:8px;border-radius:5px">'
+               f'</div></td>'
+               f'<td width="42" style="text-align:right;font-size:11px;font-weight:700;'
+               f'color:{colour};padding-left:8px">{pct}%</td></tr></table>')
+        rows.append(f"""<div style="border-left:4px solid {colour};padding:7px 11px;
+          margin:6px 0;background:#fcfcfa;border-radius:0 6px 6px 0;font-size:12.5px">
+          <b style="font-size:13.5px">{esc(j.get('name') or j.get('client'))}</b>
+          {('<span style="background:#666;color:#fff;border-radius:3px;padding:1px 6px;font-size:10px">'+esc(tier)+'</span>') if tier else ''}
+          {risk_badge}
+          {('· <a href="tel:'+esc(j['phone'])+'" style="color:#2980b9;text-decoration:none">'+esc(j['phone'])+'</a>') if j.get('phone') else ''}
+          <span style="float:right;color:{colour};font-weight:700">{emoji} {esc(label)}</span>
+          {bar}
+          <span style="color:#555">Lead: {esc(j.get('interest') or '?')} ·
           {esc(j.get('when') or '?')} · {esc(j.get('compound') or 'no compound')}
-          <span style="color:#aaa">{esc(ago)}</span></span><br>
-          <span style="color:{scol(status)};font-weight:600">Now: {esc(status)}</span>
-          {(' · stage '+esc(stage)) if stage else ''}{amt}{rep}</div>""")
+          <span style="color:#aaa">{esc(ago)}</span></span>{amt}{rep}</div>""")
     return (f"""<h3 style="margin:18px 0 6px;font-size:15px">🔗 Lead → sales journey
-      <span style="font-size:11px;color:#999;font-weight:400">— {len(journey)} Facebook lead(s)
-      now tracked as clients</span></h3>{''.join(rows)}
-      <div style="font-size:11px;color:#999;margin-top:4px">
-        Names matched between the lead-ads feed and the sales tracker (the list sales keeps
-        after a measurement). Conservative matching — only confident name links are shown.</div>""")
+      <span style="font-size:11px;color:#999;font-weight:400">— {n} Facebook lead(s)
+      now tracked as clients</span></h3>{scoreboard}{''.join(rows)}
+      <div style="font-size:11px;color:#999;margin-top:6px">
+        Each bar shows how far that Facebook lead has moved through the sales funnel
+        (Session → Offer → Design → <b>Contracted</b> → Won). Names matched between the
+        lead-ads feed and the sales tracker; conservative matching — only confident links shown.</div>""")
 
 
 def pick_focus(ctx):
