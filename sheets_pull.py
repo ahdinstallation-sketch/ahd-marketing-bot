@@ -301,7 +301,42 @@ _LEAD_COLS = {
     "campaign_name": 7, "form_name": 9, "is_organic": 10, "platform": 11,
     "interest": 12, "when_planning": 13, "compound": 14, "full_name": 15,
     "phone": 16, "lead_status": 18,
+    # Sales/reception team's own per-lead tracking columns (added to the right of
+    # the Lead-Ads export): col 20 = Stage (their status label), col 21 = Comments.
+    "sale_stage": 20, "sale_comment": 21,
 }
+# Conversion definition (confirmed by Ahmed): a lead counts as "converted to
+# contract" once its Stage reaches 'Converted' or 'Paid for Measurement' (money
+# down). The rate's denominator = QUALIFIED leads — we drop junk / unworkable
+# buckets so the % reflects real, contactable AHD leads.
+_LEAD_WON_STAGES = {"converted", "paid for measurement"}
+_LEAD_UNQUALIFIED_STAGES = {"", "n/a", "early stage", "international number",
+                            "designy client"}
+# The legend/header text bleeds into col 20/21 on the sheet's first two rows —
+# ignore those literal labels so they're not mistaken for a real Stage.
+_LEAD_STAGE_LEGEND = {"stage", "comments", "created_time"}
+# Group the many free-text Stage labels into an ordered reception funnel for a
+# compact, readable breakdown (first match wins; anything else → "Other").
+_STAGE_GROUPS = [
+    ("Won / paid", ("converted", "paid for measurement")),
+    ("Quote made", ("group made",)),
+    ("Engaged", ("will visit", "visited showroom", "will get back to us",
+                 "needs design however good lead", "not interested but a good lead",
+                 "engineer", "sent to ezz")),
+    ("Contacted", ("contacted - no answer", "asked to call later",
+                   "asked to call another number", "nouran will call",
+                   "follow with ezz")),
+    ("Lost / out", ("lost lead", "out of budget", "not interested")),
+    ("Unqualified", ("n/a", "early stage", "international number",
+                     "designy client", "")),
+]
+
+
+def _stage_group(stage_norm):
+    for label, members in _STAGE_GROUPS:
+        if stage_norm in members:
+            return label
+    return "Other"
 # Premium Cairo compounds (brand fit for AHD's high-end kitchens/wardrobes).
 _PREMIUM_COMPOUNDS = ("palm hills", "new giza", "mivida", "mountain view",
                       "madinaty", "maadi", "new cairo", "zayed", "الشيخ زايد",
@@ -367,7 +402,8 @@ def analyze_ahd_leads(rows, gid_note=""):
     out = {"total": 0, "by_platform": {}, "by_interest": {}, "by_urgency": {},
            "by_campaign": {}, "by_compound": {}, "tiers": {"A": 0, "B": 0, "C": 0},
            "yesterday": 0, "last7": 0, "last30": 0, "top_leads": [],
-           "unworked": 0}
+           "unworked": 0, "by_stage": {}, "_qualified": 0, "_won": 0,
+           "won_leads": []}
     today = datetime.date.today()
     leads = []
     for r in rows:
@@ -383,6 +419,9 @@ def analyze_ahd_leads(rows, gid_note=""):
         lead = {k: cell(k) for k in _LEAD_COLS}
         # Strip the Lead-Ads field prefixes (phone "p:+201…", id "l:…").
         lead["phone"] = re.sub(r"^p:\s*", "", lead["phone"]).strip()
+        # Guard the Stage cell against legend/header text bleeding in on the top rows.
+        if _norm(lead["sale_stage"]) in _LEAD_STAGE_LEGEND:
+            lead["sale_stage"] = ""
         d = _lead_date(lead["created_time"])
         sc, tier, why = _score_lead(lead)
         lead["score"], lead["tier"], lead["why"] = sc, tier, why
@@ -404,6 +443,19 @@ def analyze_ahd_leads(rows, gid_note=""):
         out["by_compound"][comp] = out["by_compound"].get(comp, 0) + 1
         if _norm(lead["lead_status"]) in ("", "created"):
             out["unworked"] += 1
+        # Reception Stage (sales-maintained) → status breakdown + conversion rate.
+        stg = _norm(lead["sale_stage"])
+        slabel = lead["sale_stage"].strip() or "(blank)"
+        out["by_stage"][slabel] = out["by_stage"].get(slabel, 0) + 1
+        if stg not in _LEAD_UNQUALIFIED_STAGES:
+            out["_qualified"] += 1
+            if stg in _LEAD_WON_STAGES:
+                out["_won"] += 1
+                out["won_leads"].append({
+                    "name": lead["full_name"], "phone": lead["phone"],
+                    "stage": lead["sale_stage"].strip(),
+                    "compound": lead["compound"], "days_ago": (today - d).days if d else None,
+                })
         if d:
             ago = (today - d).days
             if ago == 1:
@@ -421,6 +473,30 @@ def analyze_ahd_leads(rows, gid_note=""):
     out["by_urgency"] = topn(out["by_urgency"])
     out["by_campaign"] = topn(out["by_campaign"], 6)
     out["by_compound"] = topn(out["by_compound"], 10)
+    out["by_stage"] = topn(out["by_stage"], 20)
+
+    # Conversion summary from the sales-maintained Stage column.
+    qual = out.pop("_qualified")
+    won = out.pop("_won")
+    stage_norm_counts = {}
+    for label, cnt in out["by_stage"].items():
+        stage_norm_counts[_norm(label if label != "(blank)" else "")] = cnt
+    grouped = {}
+    for label, cnt in out["by_stage"].items():
+        g = _stage_group(_norm("" if label == "(blank)" else label))
+        grouped[g] = grouped.get(g, 0) + cnt
+    order = [g for g, _ in _STAGE_GROUPS] + ["Other"]
+    out["stage_funnel"] = [(g, grouped[g]) for g in order if grouped.get(g)]
+    out["conversion"] = {
+        "total": out["total"], "qualified": qual, "won": won,
+        "pct": round(100 * won / qual, 1) if qual else None,
+        "converted": stage_norm_counts.get("converted", 0),
+        "paid_measurement": stage_norm_counts.get("paid for measurement", 0),
+        "groups_made": stage_norm_counts.get("group made", 0),
+    }
+    out["won_leads"] = sorted(
+        out["won_leads"],
+        key=lambda l: (l["days_ago"] is None, l["days_ago"] if l["days_ago"] is not None else 0))
 
     # Best-fit leads to act on first: highest score, then most recent. Prefer
     # the last 14 days (actionable now) but fall back to overall if the feed is old.
@@ -435,6 +511,7 @@ def analyze_ahd_leads(rows, gid_note=""):
         "when": l["when_planning"], "compound": l["compound"],
         "platform": l["platform"], "campaign": l["campaign_name"],
         "days_ago": l["days_ago"], "why": l["why"],
+        "sale_stage": l["sale_stage"], "sale_comment": l["sale_comment"],
     } for l in pool[:12]]
     out["recent_window"] = bool(recent)
     # Compact full list, used to correlate lead names against the sales tracker.
@@ -444,6 +521,7 @@ def analyze_ahd_leads(rows, gid_note=""):
         "interest": l["interest"], "when": l["when_planning"],
         "compound": l["compound"], "platform": l["platform"],
         "tier": l["tier"], "score": l["score"],
+        "sale_stage": l["sale_stage"], "sale_comment": l["sale_comment"],
     } for l in leads]
     return out
 
@@ -584,6 +662,7 @@ def correlate_leads_tracker(leads_detail, clients_detail):
                     "client": c.get("client"), "status": c.get("status") or "",
                     "stage": c.get("stage") or "", "amount": c.get("amount") or "",
                     "rep": c.get("rep") or "",
+                    "sale_stage": l.get("sale_stage") or "",
                 })
                 break
     # Most recently-generated leads first.

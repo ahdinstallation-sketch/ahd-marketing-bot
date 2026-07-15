@@ -266,6 +266,9 @@ def render(ctx):
     # 5b) media-buyer view: delivery health + per-campaign 7d trend + fatigue
     P.append(_media_buyer_block(meta))
 
+    # 5c-i) lead → contract conversion, from the reception team's Stage column
+    P.append(_lead_conversion_block(sheets.get("ahd_leads")))
+
     # 5c) lead intelligence: brand-fit scoring + best-fit leads to call today
     P.append(_lead_intel_block(sheets.get("ahd_leads")))
 
@@ -476,11 +479,15 @@ def _lead_intel_block(li):
         act_line = (f'<div style="color:#555;font-size:11.5px;margin-top:2px">→ {esc(action)}</div>'
                     if l["tier"] not in shown_tiers else "")
         shown_tiers.add(l["tier"])
+        stg = (l.get("sale_stage") or "").strip()
+        stg_badge = (f'<span style="background:#444;color:#fff;border-radius:3px;'
+                     f'padding:0 5px;font-size:10px">{esc(stg)}</span>') if stg else ''
         P.append(f"""<div style="border-left:3px solid {color};padding:5px 10px;margin:4px 0;
           background:#fcfcfa;font-size:12.5px">
           <b>{esc(l['name'] or '(no name)')}</b>
           <span style="background:{color};color:#fff;border-radius:3px;padding:0 5px;font-size:10px">
           {esc(l['tier'])} · {l['score']}</span>
+          {stg_badge}
           {('· <a href="tel:'+esc(l['phone'])+'">'+esc(l['phone'])+'</a>') if l.get('phone') else '· <span style="color:#c0392b">no phone</span>'}
           <span style="color:#aaa">{esc(ago)}</span><br>
           <span style="color:#444">{esc(l['interest'])} · {esc(l['when'])} ·
@@ -490,6 +497,92 @@ def _lead_intel_block(li):
       Score = urgency + project size + premium compound + contactability (first-party form
       answers only — no external profiling). Tier A ≥ 6, B 4–5, C &lt; 4.</div>""")
     return "".join(P)
+
+
+# Reception funnel groups → colour (matches the Stage groups in sheets_pull).
+_STAGE_GROUP_COLOUR = {
+    "Won / paid": "#1e8e4e", "Quote made": "#27ae60", "Engaged": "#c9871f",
+    "Contacted": "#2980b9", "Lost / out": "#c0392b", "Unqualified": "#9a9a9a",
+    "Other": "#777777",
+}
+
+
+def _lead_conversion_block(al):
+    """Lead → contract conversion straight from the reception team's own 'Stage'
+    column in the AHD leads sheet: the % of qualified leads that reached a paid
+    contract, the status funnel, and who actually converted."""
+    if not al or not al.get("conversion"):
+        return ""
+    c = al["conversion"]
+    funnel = al.get("stage_funnel", []) or []
+    won_leads = al.get("won_leads", []) or []
+    pct = c.get("pct")
+    pct_str = f"{pct}%" if pct is not None else "—"
+
+    # headline scoreboard
+    scoreboard = f"""
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+      style="margin:6px 0 10px;border-collapse:separate;border-spacing:6px 0">
+      <tr>
+        <td width="33%" style="background:#e9f7ef;border:1px solid #b7e2c8;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#1e8e4e;line-height:1">{pct_str}</div>
+          <div style="font-size:10.5px;color:#3a6b4e;text-transform:uppercase;letter-spacing:.4px">
+            Lead→contract</div></td>
+        <td width="33%" style="background:#fdf3e2;border:1px solid #f0d9a8;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#c9871f;line-height:1">{fmt(c.get('won'))} <span
+            style="font-size:13px;color:#8a6a2a">/ {fmt(c.get('qualified'))}</span></div>
+          <div style="font-size:10.5px;color:#8a6a2a;text-transform:uppercase;letter-spacing:.4px">
+            Won / qualified</div></td>
+        <td width="33%" style="background:#eef4fb;border:1px solid #c3ddf3;border-radius:8px;
+          padding:10px 8px;text-align:center">
+          <div style="font-size:24px;font-weight:800;color:#2471b3;line-height:1">{fmt(c.get('groups_made'))}</div>
+          <div style="font-size:10.5px;color:#2c5a83;text-transform:uppercase;letter-spacing:.4px">
+            Quotes made</div></td>
+      </tr>
+    </table>"""
+
+    # status funnel — one labelled bar per group, sized to the largest group
+    maxn = max((n for _, n in funnel), default=1) or 1
+    bars = []
+    for label, n in funnel:
+        col = _STAGE_GROUP_COLOUR.get(label, "#777")
+        w = max(3, round(100 * n / maxn))
+        bars.append(f"""<tr>
+          <td width="90" style="font-size:11.5px;color:#444;padding:2px 6px 2px 0">{esc(label)}</td>
+          <td style="padding:2px 0"><table role="presentation" cellpadding="0" cellspacing="0"
+            style="width:100%"><tr>
+            <td style="background:{col};height:14px;width:{w}%;border-radius:3px"></td>
+            <td width="34" style="font-size:11px;font-weight:700;color:{col};padding-left:6px">{fmt(n)}</td>
+            </tr></table></td></tr>""")
+    funnel_html = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                   f'style="margin:2px 0 8px">{"".join(bars)}</table>') if bars else ""
+
+    # who converted (money down)
+    won_rows = []
+    for w in won_leads[:8]:
+        ago = f" · {w['days_ago']}d ago" if isinstance(w.get("days_ago"), int) else ""
+        comp = f" · {esc(w['compound'])}" if w.get("compound") else ""
+        tag = esc(w.get("stage") or "")
+        won_rows.append(f"""<div style="border-left:3px solid #1e8e4e;padding:4px 10px;margin:4px 0;
+          background:#f6fbf7;font-size:12.5px">
+          <b>{esc(w.get('name'))}</b>
+          <span style="background:#1e8e4e;color:#fff;border-radius:3px;padding:1px 6px;font-size:10px">{tag}</span>
+          {('· <a href="tel:'+esc(w['phone'])+'" style="color:#2980b9;text-decoration:none">'+esc(w['phone'])+'</a>') if w.get('phone') else ''}
+          <span style="color:#666">{comp}{ago}</span></div>""")
+    won_html = ('<div style="font-size:12px;color:#1e8e4e;font-weight:700;margin:6px 0 2px">'
+                '✅ Converted (paid / signed):</div>' + "".join(won_rows)) if won_rows else ""
+
+    return (f"""<h3 style="margin:18px 0 6px;font-size:15px">🎯 Lead → contract conversion
+      <span style="font-size:11px;color:#999;font-weight:400">— from the sales team's Stage
+      column ({fmt(c.get('total'))} leads)</span></h3>{scoreboard}
+      <div style="font-size:12px;color:#555;font-weight:600;margin:4px 0 2px">Reception funnel:</div>
+      {funnel_html}{won_html}
+      <div style="font-size:11px;color:#999;margin-top:5px">
+        Conversion = leads at Stage <b>Converted</b> or <b>Paid for Measurement</b> ÷ qualified
+        leads (junk / N-A / international / Designy excluded). Status is whatever the team logs
+        in the AHD leads sheet.</div>""")
 
 
 # Funnel ladder (ascending) → (progress %, short label, emoji). The furthest TRUE
