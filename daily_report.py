@@ -103,6 +103,13 @@ def esc(s):
     return html.escape(str(s or ""))
 
 
+def _egp_accounts(meta):
+    """Display accounts scoped to EGP only (drops the Designy USD account so its
+    spend never shows). Falls back to all accounts if none are EGP."""
+    accts = [a for a in meta.get("accounts", []) if a.get("currency") == "EGP"]
+    return accts or meta.get("accounts", [])
+
+
 # ---------- linkage math ----------
 
 def build_context(meta, sheets):
@@ -156,7 +163,6 @@ def render(ctx):
     meta = ctx["meta"]
     sheets = ctx["sheets"]
     g = ctx["group"]
-    s = ctx["sales"]
     today = cairo_now().date()
     P = []
     P.append(f"""<!doctype html><html><head><meta charset="utf-8">
@@ -192,7 +198,7 @@ def render(ctx):
         <th style="padding:6px">Spend y'day</th><th style="padding:6px">Spend MTD</th>
         <th style="padding:6px">Leads y'day</th><th style="padding:6px">CPL y'day</th>
         <th style="padding:6px">CTR y'day</th></tr>""")
-    for a in meta.get("accounts", []):
+    for a in _egp_accounts(meta):
         y = a.get("yesterday", {}) or {}
         m = a.get("mtd", {}) or {}
         if "error" in y:
@@ -209,49 +215,43 @@ def render(ctx):
           <td style="padding:6px">{fmt(y.get('ctr'))}%</td></tr>""")
     P.append("</table>")
 
-    # 3) marketing -> sales linkage
-    P.append('<h3 style="margin:18px 0 6px;font-size:15px">Marketing → Sales effect</h3>')
-    P.append(f"""<div style="background:#faf7ee;border:1px solid #eee;border-radius:6px;
-      padding:10px 14px;font-size:13px;line-height:1.7">
-      <b>Funnel (live tracker):</b> Showroom sessions <b>{fmt(s['sessions'])}</b>
-      → Contracted <b>{fmt(s['contracted'])}</b> → Orders <b>{fmt(s['orders'])}</b><br>
-      <b>Signed / contracted value:</b> {fmt(s['signed_value'], 'EGP ')} ·
-      <b>Open pipeline:</b> {fmt(s['open_pipeline'], 'EGP ')}<br>
-      <b>Spend MTD vs signed:</b> {fmt(g['spend_mtd'], 'EGP ~')} ad spend →
-      {('EGP ' + fmt(s['egp_per_spend']) + ' signed per EGP spent') if s['egp_per_spend'] else 'signed/ spend ratio n/a'}
-    </div>""")
-
     # 3b) live cash-in to date (Looker-Studio-backed sheet, auto-updates)
     P.append(_cash_in_block(sheets.get("cash_in")))
 
-    # 4) boost winners (organic)
-    P.append('<h3 style="margin:18px 0 6px;font-size:15px">⬆ Boost these — top organic posts</h3>')
-    any_posts = False
+    # 4) boost winners (organic) — the single top 3 across ALL pages, ranked by
+    # engagement (shares weigh most for organic reach, then reactions, then comments)
+    P.append('<h3 style="margin:18px 0 6px;font-size:15px">⬆ Boost these — top 3 organic posts</h3>')
+    all_posts = []
     for pg in meta.get("pages", []):
         if pg.get("error"):
             P.append(f"""<div style="font-size:12px;color:#b00">{esc(pg['name'])}: {esc(pg['error'])[:90]}</div>""")
             continue
-        for post in pg.get("posts", [])[:3]:
-            any_posts = True
-            link = esc(post["link"])
-            metrics = [f"{fmt(post['shares'])} shares"]
-            if post.get("reactions") is not None:
-                metrics.append(f"{fmt(post['reactions'])} reactions")
-            if post.get("comments") is not None:
-                metrics.append(f"{fmt(post['comments'])} comments")
-            P.append(f"""<div style="border-left:3px solid #27ae60;padding:6px 10px;margin:6px 0;
-              background:#f6fbf7;font-size:13px">
-              <b>{esc(pg['name'])}</b> · {esc(post['created'])} ·
-              {esc(' · '.join(metrics))}<br>
-              <span style="color:#444">{esc(post['msg'])}</span>
-              {(' · <a href="'+link+'">view</a>') if link else ''}</div>""")
-    if not any_posts:
+        for post in pg.get("posts", []):
+            score = ((post.get("shares") or 0) * 3
+                     + (post.get("reactions") or 0)
+                     + (post.get("comments") or 0))
+            all_posts.append((score, pg.get("name", ""), post))
+    all_posts.sort(key=lambda t: -t[0])
+    for score, pg_name, post in all_posts[:3]:
+        link = esc(post["link"])
+        metrics = [f"{fmt(post['shares'])} shares"]
+        if post.get("reactions") is not None:
+            metrics.append(f"{fmt(post['reactions'])} reactions")
+        if post.get("comments") is not None:
+            metrics.append(f"{fmt(post['comments'])} comments")
+        P.append(f"""<div style="border-left:3px solid #27ae60;padding:6px 10px;margin:6px 0;
+          background:#f6fbf7;font-size:13px">
+          <b>{esc(pg_name)}</b> · {esc(post['created'])} ·
+          {esc(' · '.join(metrics))}<br>
+          <span style="color:#444">{esc(post['msg'])}</span>
+          {(' · <a href="'+link+'">view</a>') if link else ''}</div>""")
+    if not all_posts:
         P.append('<div style="font-size:12px;color:#888">No organic post data yet (token/page scope).</div>')
 
     # 5) kill/fix losers (paid)
     P.append('<h3 style="margin:18px 0 6px;font-size:15px">⛔ Fix or pause — paid ads leaking budget</h3>')
     any_loser = False
-    for a in meta.get("accounts", []):
+    for a in _egp_accounts(meta):
         for ad in a.get("ad_losers", [])[:3]:
             any_loser = True
             why = "no leads" if not ad["leads"] else (f"CPL {fmt(ad['cpl'])}" )
@@ -305,36 +305,22 @@ def _cpl_big(label, value, sub=""):
 
 
 def _cpl_hero(ctx):
-    """Cost per lead — the headline number the team feeds into the profitability
-    calculator. Shows yesterday / last-7d / month-to-date so they can pick a stable
-    figure (7d or MTD), plus the per-account CPL underneath."""
+    """Cost per lead — the two numbers that matter: last-7d (recent trend) and
+    month-to-date (stable). This is the figure the team feeds into the
+    profitability calculator."""
     g = ctx["group"]
-    meta = ctx["meta"]
     cards = (
         _cpl_big("CPL — last 7 days", fmt(g.get("cpl_7d"), "EGP "),
-                 f"{fmt(g.get('leads_7d'))} leads · {fmt(g.get('spend_7d'),'EGP ')} spend")
+                 f"{fmt(g.get('leads_7d'))} leads")
         + _cpl_big("CPL — month to date", fmt(g.get("cpl_mtd"), "EGP "),
-                   f"{fmt(g.get('leads_mtd'))} leads · {fmt(g.get('spend_mtd'),'EGP ')} spend")
-        + _cpl_big("CPL — yesterday", fmt(g.get("cpl_yest"), "EGP "),
-                   f"{fmt(g.get('leads_yest'))} leads")
+                   f"{fmt(g.get('leads_mtd'))} leads")
     )
-    # per-account CPL line (only accounts with leads)
-    parts = []
-    for a in meta.get("accounts", []):
-        m = a.get("mtd", {}) or {}
-        if "error" in m or not m.get("leads"):
-            continue
-        parts.append(f"{esc(a['name'])} <b style='color:#f3e6b0'>"
-                     f"{fmt(m.get('cpl'))} {esc(a['currency'])}</b> ({fmt(m.get('leads'))} leads)")
-    by_acct = (' · '.join(parts)) or "no per-account leads yet"
     return (f"""<div style="background:#111;border-radius:8px;padding:14px 16px;margin:4px 0 16px">
       <div style="color:#f3e6b0;font-size:15px;font-weight:700;margin-bottom:10px">
         💰 Cost per lead (CPL) — feed this into the profitability calculator</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">{cards}</div>
-      <div style="color:#bda86a;font-size:11.5px;margin-top:10px">
-        Per-account (MTD): {by_acct}</div>
-      <div style="color:#7d7458;font-size:10.5px;margin-top:4px">
-        Use the 7-day or MTD figure (more stable than a single day). CPL = ad spend ÷ Meta leads.</div>
+      <div style="color:#7d7458;font-size:10.5px;margin-top:8px">
+        CPL = lead-campaign spend ÷ Meta leads (EGP accounts). Use MTD for a stable figure.</div>
     </div>""")
 
 
@@ -392,7 +378,7 @@ def _media_buyer_block(meta):
     P = ['<h3 style="margin:18px 0 6px;font-size:15px">📊 Media-buyer view — delivery, '
          'campaign trend & fatigue</h3>']
     any_data = False
-    for a in meta.get("accounts", []):
+    for a in _egp_accounts(meta):
         dh = a.get("delivery", {}) or {}
         ct = a.get("campaign_trend", {}) or {}
         if "error" in a.get("yesterday", {}):
