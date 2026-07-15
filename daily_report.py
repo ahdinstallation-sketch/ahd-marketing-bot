@@ -107,30 +107,26 @@ def esc(s):
 
 def build_context(meta, sheets):
     ctx = {"meta": meta, "sheets": sheets}
-    # group spend
-    y_spend = sum((a.get("yesterday", {}) or {}).get("spend", 0) or 0
-                  for a in meta.get("accounts", []))
-    m_spend = sum((a.get("mtd", {}) or {}).get("spend", 0) or 0
-                  for a in meta.get("accounts", []))
-    y_leads = sum((a.get("yesterday", {}) or {}).get("leads", 0) or 0
-                  for a in meta.get("accounts", []))
-    m_leads = sum((a.get("mtd", {}) or {}).get("leads", 0) or 0
-                  for a in meta.get("accounts", []))
-    w_spend = sum((a.get("last7", {}) or {}).get("spend", 0) or 0
-                  for a in meta.get("accounts", []))
-    w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0
-                  for a in meta.get("accounts", []))
+    # Group headline spend/CPL is monetary, so scope it to EGP accounts only — summing
+    # spend across currencies (EGP + Designy USD) would be meaningless. Leads are unitless
+    # but we keep them on the same EGP basis so the headline CPL is internally consistent.
+    accts = [a for a in meta.get("accounts", []) if a.get("currency") == "EGP"]
+    if not accts:  # safety: never blank the headline if no EGP account is present
+        accts = meta.get("accounts", [])
+    y_spend = sum((a.get("yesterday", {}) or {}).get("spend", 0) or 0 for a in accts)
+    m_spend = sum((a.get("mtd", {}) or {}).get("spend", 0) or 0 for a in accts)
+    y_leads = sum((a.get("yesterday", {}) or {}).get("leads", 0) or 0 for a in accts)
+    m_leads = sum((a.get("mtd", {}) or {}).get("leads", 0) or 0 for a in accts)
+    w_spend = sum((a.get("last7", {}) or {}).get("spend", 0) or 0 for a in accts)
+    w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0 for a in accts)
     # CPL numerator = spend on LEAD campaigns only (falls back to total spend), so
     # traffic/awareness campaign spend doesn't inflate cost-per-lead.
     y_lead_spend = sum((a.get("yesterday", {}) or {}).get("lead_spend",
-                       (a.get("yesterday", {}) or {}).get("spend", 0)) or 0
-                       for a in meta.get("accounts", []))
+                       (a.get("yesterday", {}) or {}).get("spend", 0)) or 0 for a in accts)
     m_lead_spend = sum((a.get("mtd", {}) or {}).get("lead_spend",
-                       (a.get("mtd", {}) or {}).get("spend", 0)) or 0
-                       for a in meta.get("accounts", []))
+                       (a.get("mtd", {}) or {}).get("spend", 0)) or 0 for a in accts)
     w_lead_spend = sum((a.get("last7", {}) or {}).get("lead_spend",
-                       (a.get("last7", {}) or {}).get("spend", 0)) or 0
-                       for a in meta.get("accounts", []))
+                       (a.get("last7", {}) or {}).get("spend", 0)) or 0 for a in accts)
     ctx["group"] = {
         "spend_yest": y_spend, "spend_mtd": m_spend,
         "leads_yest": y_leads, "leads_mtd": m_leads,
