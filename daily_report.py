@@ -120,13 +120,24 @@ def build_context(meta, sheets):
                   for a in meta.get("accounts", []))
     w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0
                   for a in meta.get("accounts", []))
+    # CPL numerator = spend on LEAD campaigns only (falls back to total spend), so
+    # traffic/awareness campaign spend doesn't inflate cost-per-lead.
+    y_lead_spend = sum((a.get("yesterday", {}) or {}).get("lead_spend",
+                       (a.get("yesterday", {}) or {}).get("spend", 0)) or 0
+                       for a in meta.get("accounts", []))
+    m_lead_spend = sum((a.get("mtd", {}) or {}).get("lead_spend",
+                       (a.get("mtd", {}) or {}).get("spend", 0)) or 0
+                       for a in meta.get("accounts", []))
+    w_lead_spend = sum((a.get("last7", {}) or {}).get("lead_spend",
+                       (a.get("last7", {}) or {}).get("spend", 0)) or 0
+                       for a in meta.get("accounts", []))
     ctx["group"] = {
         "spend_yest": y_spend, "spend_mtd": m_spend,
         "leads_yest": y_leads, "leads_mtd": m_leads,
         "spend_7d": w_spend, "leads_7d": w_leads,
-        "cpl_yest": round(y_spend / y_leads, 1) if y_leads else None,
-        "cpl_7d": round(w_spend / w_leads, 1) if w_leads else None,
-        "cpl_mtd": round(m_spend / m_leads, 1) if m_leads else None,
+        "cpl_yest": round(y_lead_spend / y_leads, 1) if y_leads else None,
+        "cpl_7d": round(w_lead_spend / w_leads, 1) if w_leads else None,
+        "cpl_mtd": round(m_lead_spend / m_leads, 1) if m_leads else None,
     }
     tr = sheets.get("ahd_tracker", {}) or {}
     f = tr.get("funnel", {}) or {}
@@ -171,7 +182,8 @@ def render(ctx):
       {_kpi('CPL (MTD)', fmt(g['cpl_mtd']))}
     </div>
     <div style="font-size:11px;color:#888;margin-bottom:14px">
-      Spend in each account's own currency; EGP accounts dominate. CPL = ad spend ÷ leads.</div>""")
+      Spend in each account's own currency; EGP accounts dominate. CPL = spend on lead
+      campaigns ÷ leads (traffic / awareness spend is excluded so CPL isn't inflated).</div>""")
 
     # 1b) COST PER LEAD — headline metric for the profitability calculator
     P.append(_cpl_hero(ctx))

@@ -42,6 +42,13 @@ PAGES = [
 LEAD_ACTION_PRIORITY = ("lead", "onsite_conversion.lead_grouped",
                         "leadgen_grouped", "offsite_conversion.fb_pixel_lead")
 
+# CPL should measure the cost of the LEAD campaigns, not the whole account. Traffic /
+# awareness / engagement campaigns (e.g. an Instagram profile-visits LINK_CLICKS campaign)
+# spend money but produce no form leads, so dividing TOTAL account spend by leads inflates
+# CPL. We therefore compute CPL over spend on lead-objective campaigns only. Total spend is
+# still reported separately as the budget figure. (Old + new Meta lead objectives.)
+LEAD_OBJECTIVES = {"OUTCOME_LEADS", "LEAD_GENERATION"}
+
 
 def _get(path, params, token=None):
     params = dict(params)
@@ -110,7 +117,7 @@ def _insights(account_id, time_range, level="account"):
     if level == "ad":
         fields = "ad_id,ad_name,campaign_name," + fields
     elif level == "campaign":
-        fields = "campaign_id,campaign_name," + fields
+        fields = "campaign_id,campaign_name,objective," + fields
     params = {
         "level": level,
         "fields": fields,
@@ -119,6 +126,22 @@ def _insights(account_id, time_range, level="account"):
     }
     res = _get(f"act_{account_id}/insights", params)
     return res
+
+
+def _lead_spend(account_id, time_range):
+    """Spend on LEAD-objective campaigns only, for a window. Used as the CPL numerator so
+    traffic/awareness spend doesn't inflate cost-per-lead. Returns (lead_spend, total_spend);
+    falls back to total spend if the campaign breakdown is unavailable."""
+    res = _insights(account_id, time_range, level="campaign")
+    if "error" in res or not res.get("data"):
+        return None, None
+    lead_spend = total = 0.0
+    for r in res.get("data", []):
+        sp = _f(r, "spend")
+        total += sp
+        if (r.get("objective") or "").upper() in LEAD_OBJECTIVES:
+            lead_spend += sp
+    return lead_spend, total
 
 
 def _delivery_health(account_id):
@@ -220,8 +243,12 @@ def _account_block(acc):
         spend = _f(row, "spend")
         clicks = _f(row, "clicks")
         leads = _leads_from_actions(row)
+        # CPL over lead-objective campaign spend only (excludes traffic/awareness spend).
+        lead_spend, _tot = _lead_spend(acc["id"], dates[key])
+        cpl_spend = lead_spend if lead_spend is not None else spend
         out[key] = {
             "spend": round(spend, 2),
+            "lead_spend": round(cpl_spend, 2),
             "impressions": int(_f(row, "impressions")),
             "clicks": int(clicks),
             "ctr": round(_f(row, "ctr"), 2),
@@ -229,7 +256,7 @@ def _account_block(acc):
             "reach": int(_f(row, "reach")),
             "frequency": round(_f(row, "frequency"), 2),
             "leads": int(leads),
-            "cpl": round(spend / leads, 2) if leads else None,
+            "cpl": round(cpl_spend / leads, 2) if leads else None,
         }
     # Ad-level winners/losers over last 7d
     res = _insights(acc["id"], dates["last7"], level="ad")
