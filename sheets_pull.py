@@ -306,10 +306,11 @@ _LEAD_COLS = {
     "sale_stage": 20, "sale_comment": 21,
 }
 # Conversion definition (confirmed by Ahmed): a lead counts as "converted to
-# contract" once its Stage reaches 'Converted' or 'Paid for Measurement' (money
-# down). The rate's denominator = QUALIFIED leads — we drop junk / unworkable
-# buckets so the % reflects real, contactable AHD leads.
-_LEAD_WON_STAGES = {"converted", "paid for measurement"}
+# contract" ONLY when its Stage is 'Converted'. 'Paid for Measurement' is just a
+# measurement deposit — near-contract, but NOT a signed contract — so it is
+# tracked separately, not as a win. Denominator = QUALIFIED leads (junk /
+# unworkable buckets dropped) so the % reflects real, contactable AHD leads.
+_LEAD_WON_STAGES = {"converted"}
 _LEAD_UNQUALIFIED_STAGES = {"", "n/a", "early stage", "international number",
                             "designy client"}
 # The legend/header text bleeds into col 20/21 on the sheet's first two rows —
@@ -318,7 +319,8 @@ _LEAD_STAGE_LEGEND = {"stage", "comments", "created_time"}
 # Group the many free-text Stage labels into an ordered reception funnel for a
 # compact, readable breakdown (first match wins; anything else → "Other").
 _STAGE_GROUPS = [
-    ("Won / paid", ("converted", "paid for measurement")),
+    ("Converted", ("converted",)),
+    ("Paid — measurement", ("paid for measurement",)),
     ("Quote made", ("group made",)),
     ("Engaged", ("will visit", "visited showroom", "will get back to us",
                  "needs design however good lead", "not interested but a good lead",

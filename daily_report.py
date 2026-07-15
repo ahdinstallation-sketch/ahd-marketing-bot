@@ -501,16 +501,17 @@ def _lead_intel_block(li):
 
 # Reception funnel groups → colour (matches the Stage groups in sheets_pull).
 _STAGE_GROUP_COLOUR = {
-    "Won / paid": "#1e8e4e", "Quote made": "#27ae60", "Engaged": "#c9871f",
-    "Contacted": "#2980b9", "Lost / out": "#c0392b", "Unqualified": "#9a9a9a",
-    "Other": "#777777",
+    "Converted": "#1e8e4e", "Paid — measurement": "#57b894", "Quote made": "#27ae60",
+    "Engaged": "#c9871f", "Contacted": "#2980b9", "Lost / out": "#c0392b",
+    "Unqualified": "#9a9a9a", "Other": "#777777",
 }
 
 
 def _lead_conversion_block(al):
     """Lead → contract conversion straight from the reception team's own 'Stage'
-    column in the AHD leads sheet: the % of qualified leads that reached a paid
-    contract, the status funnel, and who actually converted."""
+    column in the AHD leads sheet: the % of qualified leads that reached a signed
+    contract (Converted), the status funnel, and who actually converted. Paid-for-
+    measurement deposits are shown as a separate near-contract stage, not a win."""
     if not al or not al.get("conversion"):
         return ""
     c = al["conversion"]
@@ -534,12 +535,12 @@ def _lead_conversion_block(al):
           <div style="font-size:24px;font-weight:800;color:#c9871f;line-height:1">{fmt(c.get('won'))} <span
             style="font-size:13px;color:#8a6a2a">/ {fmt(c.get('qualified'))}</span></div>
           <div style="font-size:10.5px;color:#8a6a2a;text-transform:uppercase;letter-spacing:.4px">
-            Won / qualified</div></td>
-        <td width="33%" style="background:#eef4fb;border:1px solid #c3ddf3;border-radius:8px;
+            Converted / qualified</div></td>
+        <td width="33%" style="background:#eef7f2;border:1px solid #bfe3d1;border-radius:8px;
           padding:10px 8px;text-align:center">
-          <div style="font-size:24px;font-weight:800;color:#2471b3;line-height:1">{fmt(c.get('groups_made'))}</div>
-          <div style="font-size:10.5px;color:#2c5a83;text-transform:uppercase;letter-spacing:.4px">
-            Quotes made</div></td>
+          <div style="font-size:24px;font-weight:800;color:#2f9e6e;line-height:1">{fmt(c.get('paid_measurement'))}</div>
+          <div style="font-size:10.5px;color:#2c6b50;text-transform:uppercase;letter-spacing:.4px">
+            Paid — near contract</div></td>
       </tr>
     </table>"""
 
@@ -572,7 +573,7 @@ def _lead_conversion_block(al):
           {('· <a href="tel:'+esc(w['phone'])+'" style="color:#2980b9;text-decoration:none">'+esc(w['phone'])+'</a>') if w.get('phone') else ''}
           <span style="color:#666">{comp}{ago}</span></div>""")
     won_html = ('<div style="font-size:12px;color:#1e8e4e;font-weight:700;margin:6px 0 2px">'
-                '✅ Converted (paid / signed):</div>' + "".join(won_rows)) if won_rows else ""
+                '✅ Converted (signed):</div>' + "".join(won_rows)) if won_rows else ""
 
     return (f"""<h3 style="margin:18px 0 6px;font-size:15px">🎯 Lead → contract conversion
       <span style="font-size:11px;color:#999;font-weight:400">— from the sales team's Stage
@@ -580,9 +581,10 @@ def _lead_conversion_block(al):
       <div style="font-size:12px;color:#555;font-weight:600;margin:4px 0 2px">Reception funnel:</div>
       {funnel_html}{won_html}
       <div style="font-size:11px;color:#999;margin-top:5px">
-        Conversion = leads at Stage <b>Converted</b> or <b>Paid for Measurement</b> ÷ qualified
-        leads (junk / N-A / international / Designy excluded). Status is whatever the team logs
-        in the AHD leads sheet.</div>""")
+        Conversion = leads at Stage <b>Converted</b> (signed) ÷ qualified leads (junk / N-A /
+        international / Designy excluded). <b>Paid — near contract</b> = measurement deposit
+        down but not yet signed — tracked separately, not counted as a win. Status is whatever
+        the team logs in the AHD leads sheet.</div>""")
 
 
 # Funnel ladder (ascending) → (progress %, short label, emoji). The furthest TRUE
