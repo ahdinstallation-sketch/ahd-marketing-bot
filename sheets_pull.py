@@ -116,6 +116,27 @@ def _tracker_date(s):
     return None
 
 
+# Sub-room rows in the tracker are logged UNDER a parent client row and named after a
+# room/furniture item rather than a person (e.g. "His Dressing", "Kitchen", "Kitchen G.F").
+# The parent summary row keeps all stage checkboxes FALSE while the real CONTRACTED/ORDER
+# flags live on these child rows — so we detect a child by a room "head-noun" (loose
+# contains-match, catches floor-qualified variants like "Roof Kitchenette") and roll its
+# flags up into the parent (see analyze_tracker). Person rows never contain a room head-noun.
+_ROOM_HEADS = (
+    "kitchen", "kitchenette", "dressing", "wardrobe", "closet", "pantry", "laundry",
+    "vanity", "buffet", "reception", "living", "bedroom", "bed room", "nanny", "maid",
+    "tv unit", "office", "study", "bathroom", "bath", "dining", "sofa", "cladding",
+    "storage", "shoe room", "walk in", "walk-in", "cupboard", "cabinet", "fireplace",
+    "doors", "table", "chairs",
+    "مطبخ", "دريسنج", "غرفة", "دولاب", "ريسبشن", "ريسيبشن", "حمام",
+)
+
+
+def _is_subroom(name):
+    n = (name or "").strip().lower()
+    return bool(n) and any(h in n for h in _ROOM_HEADS)
+
+
 def analyze_tracker(rows):
     if not rows or len(rows) < 3:
         return {}
@@ -128,14 +149,49 @@ def analyze_tracker(rows):
                 return i
         return None
 
+    # --- Roll up sub-room child rows into their parent client (see _is_subroom) ---
+    # Collapse each group (a non-subroom parent + its following consecutive room rows) into
+    # ONE effective row, OR-ing the stage flags up. Every analysis below then runs unchanged.
+    _cl_i = idx("CLIENT")
+    _stage_cols = [i for i in (idx(n) for n in (
+        "SESSION", "OFFER", "INITIAL PRESENTATION",
+        "FINAL PRESENTATION AFTER CLIENT COMMENTS", "CONTRACTED", "ORDER")) if i is not None]
+    _amt_cols = [i for i in (idx("Amount"), idx("Amount in EGP")) if i is not None]
+
+    def _amt(x):
+        return num(x) if x and str(x).strip() else 0.0
+
+    grouped, cur = [], None
+    for r in data:
+        nm = r[_cl_i].strip() if _cl_i is not None and len(r) > _cl_i else ""
+        if cur is not None and _cl_i is not None and _is_subroom(nm):
+            # child row: OR its stage flags into the parent effective row
+            for i in _stage_cols:
+                if len(r) > i and r[i].strip().upper() == "TRUE":
+                    while len(cur) <= i:
+                        cur.append("")
+                    cur[i] = "TRUE"
+            # parent Amount is the group total in practice; only fill from children if the
+            # parent had no amount (then accumulate).
+            for i in _amt_cols:
+                cv = _amt(r[i]) if len(r) > i else 0.0
+                if cv and _amt(cur[i] if len(cur) > i else "") == 0.0:
+                    while len(cur) <= i:
+                        cur.append("")
+                    cur[i] = r[i]
+        else:
+            cur = list(r)
+            grouped.append(cur)
+    data = grouped
+
     def tcount(name):
         i = idx(name)
         return sum(1 for r in data if i is not None and len(r) > i
                    and r[i].strip().upper() == "TRUE")
 
     out = {"clients": len(data), "funnel": {}}
-    for stg in ["SESSION", "OFFER", "RHINO PRESENTATION",
-                "PRESENTATION SENT ON EXT", "CONTRACTED", "ORDER"]:
+    for stg in ["SESSION", "OFFER", "INITIAL PRESENTATION",
+                "FINAL PRESENTATION AFTER CLIENT COMMENTS", "CONTRACTED", "ORDER"]:
         out["funnel"][stg] = tcount(stg)
     si = idx("STATUS")
     if si is not None:
@@ -145,13 +201,21 @@ def analyze_tracker(rows):
             c[v] += 1
         out["status"] = dict(c.most_common(20))
     ai = idx("Amount in EGP")
+    ai2 = idx("Amount")  # fallback: many rows fill "Amount" (EGP) but leave "Amount in EGP" blank
     ci = idx("CONTRACTED")
     oi = idx("ORDER")
+
+    def amount_cell(r):
+        """Prefer 'Amount in EGP'; fall back to 'Amount' when the former is blank/zero."""
+        if ai is not None and len(r) > ai and num(r[ai]) > 0:
+            return r[ai].strip()
+        if ai2 is not None and len(r) > ai2 and num(r[ai2]) > 0:
+            return r[ai2].strip()
+        return ""
+
     signed = openval = 0.0
     for r in data:
-        if ai is None or len(r) <= ai:
-            continue
-        v = num(r[ai])
+        v = num(amount_cell(r))
         st = (r[si].strip().upper() if si is not None and len(r) > si else "")
         contr = (len(r) > ci and r[ci].strip().upper() == "TRUE") if ci is not None else False
         if st == "SIGNED CONTRACT" or contr:
@@ -177,8 +241,8 @@ def analyze_tracker(rows):
         return {
             "client": r[cl].strip() if cl is not None and len(r) > cl else "",
             "rep": r[sp].strip() if sp is not None and len(r) > sp else "",
-            "amount": r[ai].strip() if ai is not None and len(r) > ai else "",
-            "amount_num": num(r[ai]) if ai is not None and len(r) > ai else 0.0,
+            "amount": amount_cell(r),
+            "amount_num": num(amount_cell(r)),
             "note": r[nt].strip() if nt is not None and len(r) > nt else "",
             "date": bd.isoformat() if bd else None,
             "days_ago": (today - bd).days if bd else None,
@@ -205,8 +269,9 @@ def analyze_tracker(rows):
     # Per-client detail (with the furthest funnel stage reached) for correlating
     # lead names against the tracker the sales team keeps post-measurement.
     stage_order = [("ORDER", oi), ("CONTRACTED", ci),
-                   ("PRESENTATION SENT ON EXT", idx("PRESENTATION SENT ON EXT")),
-                   ("RHINO PRESENTATION", idx("RHINO PRESENTATION")),
+                   ("FINAL PRESENTATION AFTER CLIENT COMMENTS",
+                    idx("FINAL PRESENTATION AFTER CLIENT COMMENTS")),
+                   ("INITIAL PRESENTATION", idx("INITIAL PRESENTATION")),
                    ("OFFER", idx("OFFER")), ("SESSION", idx("SESSION"))]
 
     def stage_of(r):
