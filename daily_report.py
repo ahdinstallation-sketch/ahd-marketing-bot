@@ -122,10 +122,22 @@ def build_context(meta, sheets):
         accts = meta.get("accounts", [])
     y_spend = sum((a.get("yesterday", {}) or {}).get("spend", 0) or 0 for a in accts)
     m_spend = sum((a.get("mtd", {}) or {}).get("spend", 0) or 0 for a in accts)
-    y_leads = sum((a.get("yesterday", {}) or {}).get("leads", 0) or 0 for a in accts)
-    m_leads = sum((a.get("mtd", {}) or {}).get("leads", 0) or 0 for a in accts)
     w_spend = sum((a.get("last7", {}) or {}).get("spend", 0) or 0 for a in accts)
-    w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0 for a in accts)
+    # Lead COUNTS come from the AHD leads sheet — the sales team's own pipeline —
+    # NOT Meta's platform tally. Meta reads higher (Cairo-tz attribution + Messenger
+    # conversations that never enter the sheet), which is why the headline kept
+    # disagreeing with what Ahmed sees when he opens the sheet. The sheet is truth;
+    # Meta still supplies SPEND. Fall back to Meta's count only if the sheet is missing.
+    al = (sheets.get("ahd_leads") or {})
+    _has_sheet = isinstance(al.get("yesterday"), int) and "error" not in al
+    if _has_sheet:
+        y_leads = al.get("yesterday", 0) or 0
+        w_leads = al.get("last7", 0) or 0
+        m_leads = al.get("mtd", 0) or 0
+    else:
+        y_leads = sum((a.get("yesterday", {}) or {}).get("leads", 0) or 0 for a in accts)
+        w_leads = sum((a.get("last7", {}) or {}).get("leads", 0) or 0 for a in accts)
+        m_leads = sum((a.get("mtd", {}) or {}).get("leads", 0) or 0 for a in accts)
     # CPL numerator = spend on LEAD campaigns only (falls back to total spend), so
     # traffic/awareness campaign spend doesn't inflate cost-per-lead.
     y_lead_spend = sum((a.get("yesterday", {}) or {}).get("lead_spend",
@@ -141,6 +153,8 @@ def build_context(meta, sheets):
         "cpl_yest": round(y_lead_spend / y_leads, 1) if y_leads else None,
         "cpl_7d": round(w_lead_spend / w_leads, 1) if w_leads else None,
         "cpl_mtd": round(m_lead_spend / m_leads, 1) if m_leads else None,
+        "leads_source": "sheet" if _has_sheet else "meta",
+        "leads_yest_meta": sum((a.get("yesterday", {}) or {}).get("leads", 0) or 0 for a in accts),
     }
     tr = sheets.get("ahd_tracker", {}) or {}
     f = tr.get("funnel", {}) or {}
@@ -184,8 +198,12 @@ def render(ctx):
       {_kpi('CPL (MTD)', fmt(g['cpl_mtd']))}
     </div>
     <div style="font-size:11px;color:#888;margin-bottom:14px">
-      Spend in each account's own currency; EGP accounts dominate. CPL = spend on lead
-      campaigns ÷ leads (traffic / awareness spend is excluded so CPL isn't inflated).</div>""")
+      Leads are counted from the <b>AHD leads sheet</b> (your sales pipeline){(
+        " — Meta's ad platform logged " + fmt(g.get('leads_yest_meta')) +
+        " yesterday incl. Messenger &amp; timezone spill") if g.get('leads_source') == 'sheet'
+        and g.get('leads_yest_meta') != g.get('leads_yest') else ""}. Spend is from Meta in
+      each account's own currency (EGP dominates); CPL = lead-campaign spend ÷ sheet leads
+      (traffic / awareness spend excluded so CPL isn't inflated).</div>""")
 
     # 1b) COST PER LEAD — headline metric for the profitability calculator
     P.append(_cpl_hero(ctx))
@@ -323,7 +341,8 @@ def _cpl_hero(ctx):
         💰 Cost per lead (CPL) — feed this into the profitability calculator</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">{cards}</div>
       <div style="color:#7d7458;font-size:10.5px;margin-top:8px">
-        CPL = lead-campaign spend ÷ Meta leads (EGP accounts). Use MTD for a stable figure.</div>
+        CPL = lead-campaign spend (Meta) ÷ leads booked in the AHD leads sheet. Use MTD for a
+        stable figure.</div>
     </div>""")
 
 

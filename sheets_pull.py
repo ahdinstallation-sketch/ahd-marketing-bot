@@ -403,7 +403,7 @@ def analyze_ahd_leads(rows, gid_note=""):
         return {"error": "no rows", "leads": []}
     out = {"total": 0, "by_platform": {}, "by_interest": {}, "by_urgency": {},
            "by_campaign": {}, "by_compound": {}, "tiers": {"A": 0, "B": 0, "C": 0},
-           "yesterday": 0, "last7": 0, "last30": 0, "top_leads": [],
+           "yesterday": 0, "last7": 0, "last30": 0, "mtd": 0, "top_leads": [],
            "unworked": 0, "by_stage": {}, "_qualified": 0, "_won": 0,
            "won_leads": []}
     today = datetime.date.today()
@@ -462,10 +462,17 @@ def analyze_ahd_leads(rows, gid_note=""):
             ago = (today - d).days
             if ago == 1:
                 out["yesterday"] += 1
-            if 0 <= ago <= 7:
+            # Completed windows (yesterday back N days, EXCLUDING today's partial
+            # day) so they divide like-for-like against Meta's spend windows, which
+            # also run through yesterday. Meta's last7 = today-7 .. yesterday = ago 1..7.
+            if 1 <= ago <= 7:
                 out["last7"] += 1
-            if 0 <= ago <= 30:
+            if 1 <= ago <= 30:
                 out["last30"] += 1
+            # Month-to-date, 1st of month THROUGH yesterday — matches the Meta
+            # MTD spend window so sheet-based CPL divides like-for-like.
+            if ago >= 1 and d.year == today.year and d.month == today.month:
+                out["mtd"] += 1
 
     # Sort helper for the breakdown dicts (most common first, trimmed).
     def topn(d, n=8):
