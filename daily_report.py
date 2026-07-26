@@ -168,6 +168,28 @@ def build_context(meta, sheets):
         # rough efficiency: signed EGP per MTD ad pound (EGP accounts only)
         "egp_per_spend": round(signed / m_spend, 1) if m_spend else None,
     }
+    # Exact reporting window, so the email always states WHICH day/range each number
+    # covers (no more "is this yesterday or the day before?"). Prefer the dates Meta
+    # actually returned in the snapshot; fall back to the Cairo clock if Meta is absent.
+    def _pd(s):
+        try:
+            return datetime.date.fromisoformat((s or "")[:10])
+        except Exception:
+            return None
+    md = meta.get("dates") or {}
+    yd = _pd((md.get("yesterday") or {}).get("since")) or (cairo_now().date() - datetime.timedelta(days=1))
+    w_since = _pd((md.get("last7") or {}).get("since")) or (yd - datetime.timedelta(days=6))
+    w_until = _pd((md.get("last7") or {}).get("until")) or yd
+    m_since = _pd((md.get("mtd") or {}).get("since")) or yd.replace(day=1)
+    m_until = _pd((md.get("mtd") or {}).get("until")) or yd
+
+    def _dm(d):   # "25 Jul" without platform-specific %-d
+        return f"{d.day} {d:%b}" if d else "—"
+    ctx["dates"] = {
+        "yesterday": yd, "y_label": f"{yd:%a} {_dm(yd)}",
+        "w_label": f"{_dm(w_since)}–{_dm(w_until)}",
+        "m_label": f"{m_since.day}–{_dm(m_until)}",
+    }
     return ctx
 
 
@@ -177,6 +199,8 @@ def render(ctx):
     meta = ctx["meta"]
     sheets = ctx["sheets"]
     g = ctx["group"]
+    d = ctx.get("dates", {}) or {}
+    ylabel = d.get("y_label", "yesterday")
     today = cairo_now().date()
     P = []
     P.append(f"""<!doctype html><html><head><meta charset="utf-8">
@@ -186,16 +210,19 @@ def render(ctx):
       max-width:720px;margin:auto;color:#1a1a1a">
       <div style="background:#111;color:#e8d9a0;padding:18px 22px;border-radius:8px 8px 0 0">
         <div style="font-size:20px;font-weight:700">AHD Group — Daily Marketing Pulse</div>
-        <div style="font-size:13px;opacity:.8">{today:%A, %d %B %Y} · Cairo</div>
+        <div style="font-size:13px;opacity:.8">Sent {today:%A, %d %B %Y} · Cairo</div>
+        <div style="font-size:12px;color:#e8d9a0;background:#2a2a1c;display:inline-block;
+          margin-top:6px;padding:3px 10px;border-radius:5px;font-weight:600">
+          📅 Numbers below are for <b>{esc(ylabel)}</b> (the last full day)</div>
       </div>
       <div style="padding:18px 22px;border:1px solid #eee;border-top:none;background:#fff">""")
 
-    # 1) headline numbers
+    # 1) headline numbers — each carries the exact date/range it covers
     P.append(f"""<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-      {_kpi('Ad spend yesterday', fmt(g['spend_yest']))}
-      {_kpi('Spend month-to-date', fmt(g['spend_mtd']))}
-      {_kpi('Leads yesterday', fmt(g['leads_yest']))}
-      {_kpi('CPL (MTD)', fmt(g['cpl_mtd']))}
+      {_kpi(f'Ad spend · {ylabel}', fmt(g['spend_yest']))}
+      {_kpi(f'Spend MTD · {d.get("m_label","")}', fmt(g['spend_mtd']))}
+      {_kpi(f'Leads · {ylabel}', fmt(g['leads_yest']))}
+      {_kpi(f'CPL · MTD ({d.get("m_label","")})', fmt(g['cpl_mtd']))}
     </div>
     <div style="font-size:11px;color:#888;margin-bottom:14px">
       Leads are counted from the <b>AHD leads sheet</b> (your sales pipeline){(
@@ -330,10 +357,11 @@ def _cpl_hero(ctx):
     month-to-date (stable). This is the figure the team feeds into the
     profitability calculator."""
     g = ctx["group"]
+    d = ctx.get("dates", {}) or {}
     cards = (
-        _cpl_big("CPL — last 7 days", fmt(g.get("cpl_7d"), "EGP "),
+        _cpl_big(f"CPL — last 7 days ({d.get('w_label','')})", fmt(g.get("cpl_7d"), "EGP "),
                  f"{fmt(g.get('leads_7d'))} leads")
-        + _cpl_big("CPL — month to date", fmt(g.get("cpl_mtd"), "EGP "),
+        + _cpl_big(f"CPL — month to date ({d.get('m_label','')})", fmt(g.get("cpl_mtd"), "EGP "),
                    f"{fmt(g.get('leads_mtd'))} leads")
     )
     return (f"""<div style="background:#111;border-radius:8px;padding:14px 16px;margin:4px 0 16px">
