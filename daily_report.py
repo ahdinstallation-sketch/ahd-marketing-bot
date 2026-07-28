@@ -564,8 +564,12 @@ def _lead_conversion_block(al):
     c = al["conversion"]
     funnel = al.get("stage_funnel", []) or []
     won_leads = al.get("won_leads", []) or []
-    pct = c.get("pct")
+    pct = c.get("pct")                       # contracts ÷ QUALIFIED leads
     pct_str = f"{pct}%" if pct is not None else "—"
+    total_n = c.get("total") or 0
+    won_n = c.get("won") or 0
+    pct_all = round(100 * won_n / total_n, 1) if total_n else None   # contracts ÷ ALL leads
+    pct_all_str = f"{pct_all}%" if pct_all is not None else "—"
 
     # headline scoreboard
     scoreboard = f"""
@@ -574,9 +578,10 @@ def _lead_conversion_block(al):
       <tr>
         <td width="33%" style="background:#e9f7ef;border:1px solid #b7e2c8;border-radius:8px;
           padding:10px 8px;text-align:center">
-          <div style="font-size:24px;font-weight:800;color:#1e8e4e;line-height:1">{pct_str}</div>
+          <div style="font-size:24px;font-weight:800;color:#1e8e4e;line-height:1">{pct_all_str}</div>
           <div style="font-size:10.5px;color:#3a6b4e;text-transform:uppercase;letter-spacing:.4px">
-            Lead→contract</div></td>
+            Lead→contract</div>
+          <div style="font-size:9.5px;color:#7aa98d;margin-top:2px">{pct_str} of qualified</div></td>
         <td width="33%" style="background:#fdf3e2;border:1px solid #f0d9a8;border-radius:8px;
           padding:10px 8px;text-align:center">
           <div style="font-size:24px;font-weight:800;color:#c9871f;line-height:1">{fmt(c.get('won'))} <span
@@ -628,10 +633,11 @@ def _lead_conversion_block(al):
       <div style="font-size:12px;color:#555;font-weight:600;margin:4px 0 2px">Reception funnel:</div>
       {funnel_html}{won_html}
       <div style="font-size:11px;color:#999;margin-top:5px">
-        Conversion = leads at Stage <b>Converted</b> (signed) ÷ qualified leads (junk / N-A /
-        international / Designy excluded). <b>Paid — near contract</b> = measurement deposit
-        down but not yet signed — tracked separately, not counted as a win. Status is whatever
-        the team logs in the AHD leads sheet.</div>""")
+        <b>Lead→contract = {pct_all_str}</b> = signed <b>Converted</b> leads ({fmt(won_n)}) ÷
+        <b>all</b> leads ({fmt(total_n)}). The smaller "{pct_str} of qualified" divides by qualified
+        leads only (junk / N-A / international / Designy excluded). <b>Paid — near contract</b> =
+        measurement deposit down but not yet signed — tracked separately, not counted as a win.
+        Status is whatever the team logs in the AHD leads sheet.</div>""")
 
 
 # Funnel ladder (ascending) → (progress %, short label, emoji). The furthest TRUE
