@@ -581,7 +581,8 @@ def _lead_conversion_block(al):
           <div style="font-size:24px;font-weight:800;color:#1e8e4e;line-height:1">{pct_all_str}</div>
           <div style="font-size:10.5px;color:#3a6b4e;text-transform:uppercase;letter-spacing:.4px">
             Lead→contract</div>
-          <div style="font-size:9.5px;color:#7aa98d;margin-top:2px">{pct_str} of qualified</div></td>
+          <div style="font-size:10px;color:#3a6b4e;font-weight:700;margin-top:2px">{fmt(won_n)} of {fmt(total_n)} leads</div>
+          <div style="font-size:9px;color:#7aa98d;margin-top:1px">{pct_str} of qualified</div></td>
         <td width="33%" style="background:#fdf3e2;border:1px solid #f0d9a8;border-radius:8px;
           padding:10px 8px;text-align:center">
           <div style="font-size:24px;font-weight:800;color:#c9871f;line-height:1">{fmt(c.get('won'))} <span
