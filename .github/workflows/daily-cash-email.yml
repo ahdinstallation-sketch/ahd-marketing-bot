@@ -13,6 +13,7 @@ on:
     # window; the script sends on the first run at/after 08:00 Cairo and dedupes
     # to once per day (marker persisted via actions/cache below). Times are Cairo
     # DST (UTC+3): 08:05, 08:35, 09:05, 09:35, 10:05, 11:05, 13:05.
+    # The script itself skips Fridays (weekend) — cron still fires but no send.
     - cron: "5 5 * * *"
     - cron: "35 5 * * *"
     - cron: "5 6 * * *"

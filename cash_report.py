@@ -547,6 +547,9 @@ def main():
         print("DRY RUN — not sending.")
         return 0
     if not force:
+        if cairo_now().weekday() == 4:  # Friday (Mon=0 … Fri=4) — weekend, no send
+            print("Cairo day is Friday — skipping (no cash report on Fridays).")
+            return 0
         if _already_sent_today():
             print("Already sent today — skipping (dedupe).")
             return 0
