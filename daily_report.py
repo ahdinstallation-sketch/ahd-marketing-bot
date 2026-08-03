@@ -402,8 +402,25 @@ def _cash_in_block(ci):
     yline = (f'<div style="font-size:12px;color:#666;margin-top:6px">'
              f'YTD {esc(ci.get("ytd_year") or "")}: {" · ".join(yparts)}</div>') if yparts else ""
     asof = f" · as of {esc(ci['as_of'])}" if ci.get("as_of") else ""
+
+    # If the latest month WITH collections is behind the current calendar month,
+    # the current month simply hasn't been collected/posted yet (early in the
+    # month, or the Looker→sheet refresh hasn't pushed it). Say so explicitly so
+    # the figure reads as intentional (last closed month), not as a stale bot.
+    pending = ""
+    cur = cairo_now()
+    cur_label = f"{cur:%B %Y}"
+    mlabel_raw = (ci.get("month_label") or "").strip()
+    if mlabel_raw and mlabel_raw.lower() != cur_label.lower():
+        pending = (f'<div style="font-size:11.5px;color:#b06a12;background:#fdf3e2;'
+                   f'border:1px solid #f0d9a8;border-radius:6px;padding:6px 10px;margin:6px 0 2px">'
+                   f'ℹ️ {esc(cur_label)} has no collections posted yet — showing the last '
+                   f'closed month (<b>{esc(mlabel_raw)}</b>). Updates automatically once '
+                   f'{esc(cur_label)} cash lands in the sheet.</div>')
+
     return (f"""<h3 style="margin:18px 0 6px;font-size:15px">Cash in by company
       <span style="font-size:11px;color:#999;font-weight:400">— live from treasury sheet{asof}</span></h3>
+      {pending}
       <div style="display:flex;gap:10px;flex-wrap:wrap">{''.join(cards)}</div>
       {yline}
       <div style="font-size:11px;color:#999;margin-top:5px">
