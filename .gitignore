@@ -1,5 +1,8 @@
 report.html
+cash_report.html
+cash_report_preview.pdf
 .sent_marker
+.cash_sent_marker
 *.json
 .env
 .secrets

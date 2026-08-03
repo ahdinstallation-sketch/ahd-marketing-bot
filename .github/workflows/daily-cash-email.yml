@@ -1,0 +1,65 @@
+name: Daily Cash Position Email
+
+on:
+  workflow_dispatch:           # manual "Run workflow" button + external pinger
+    inputs:
+      force:
+        description: "Send now, ignoring the 08:00–21:00 Cairo window + once-per-day dedupe"
+        type: boolean
+        default: true           # manual button = test send; the pinger passes false
+  schedule:
+    # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
+    # fire several times across the morning so at least one lands in the send
+    # window; the script sends on the first run at/after 08:00 Cairo and dedupes
+    # to once per day (marker persisted via actions/cache below). Times are Cairo
+    # DST (UTC+3): 08:05, 08:35, 09:05, 09:35, 10:05, 11:05, 13:05.
+    - cron: "5 5 * * *"
+    - cron: "35 5 * * *"
+    - cron: "5 6 * * *"
+    - cron: "35 6 * * *"
+    - cron: "5 7 * * *"
+    - cron: "5 8 * * *"
+    - cron: "5 10 * * *"
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Compute Cairo date
+        run: echo "CAIRO_DATE=$(TZ=Africa/Cairo date +%F)" >> "$GITHUB_ENV"
+      - name: Restore once-per-day send marker
+        # First run of the Cairo day misses (script sends + writes the marker, which
+        # is saved to cache at job end). Later same-day runs hit and the script skips.
+        uses: actions/cache@v4
+        with:
+          path: .cash_sent_marker
+          key: cash-sent-${{ env.CAIRO_DATE }}
+      - name: Build and send cash position report
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          CASH_RECIPIENTS: ${{ secrets.CASH_RECIPIENTS }}
+          CASH_SHEET_ID: ${{ secrets.CASH_SHEET_ID }}
+        # Manual dispatch with force=true → send now (test). The external pinger
+        # dispatches with force=false, so it (like the schedule) goes through the
+        # script's 08:00–21:00 window + once-per-day dedupe — no duplicate sends.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            python cash_report.py --force
+          else
+            python cash_report.py
+          fi
+      - name: Upload cash report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cash-report-html
+          path: cash_report.html
+          if-no-files-found: ignore
