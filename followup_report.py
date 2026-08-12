@@ -82,8 +82,7 @@ def _bucket(rec):
     if stage == "ORDER":
         return None  # in production — done
     if stage == "CONTRACTED" or status == "SIGNED CONTRACT":
-        return ("contracted_no_order", "Contracted — no production order yet",
-                "Signed but not yet released to the factory. Collect deposit & place the order.")
+        return None  # signed / awaiting production order — closed for sales follow-up
     if stage == "FINAL PRESENTATION AFTER CLIENT COMMENTS":
         return ("presented_no_contract", "Presented — awaiting signature",
                 "Full presentation done, revisions addressed. This is the closing step.")
@@ -100,7 +99,6 @@ def _bucket(rec):
 # Display order + short titles for the action sections.
 _BUCKET_ORDER = [
     ("presented_no_contract", "🖊️ Presented — awaiting signature"),
-    ("contracted_no_order", "🏭 Contracted — no production order"),
     ("needs_presentation", "📐 Needs a presentation"),
     ("needs_offer", "🧾 Needs an offer / quote"),
     ("new", "🆕 New — needs first session"),
@@ -204,8 +202,8 @@ tr:last-child td{border-bottom:none}
 .foot{text-align:center;font-size:10.5px;color:#a9a190;margin-top:14px}
 """
 
-_MAXROWS = 3           # top N clients per money bucket
-_PRIMARY = {"presented_no_contract", "contracted_no_order", "needs_presentation"}
+_MAXROWS = 5           # top N clients per money bucket
+_PRIMARY = {"presented_no_contract", "needs_presentation"}
 
 
 def _days_tag(da):
