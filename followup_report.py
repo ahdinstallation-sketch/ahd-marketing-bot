@@ -151,9 +151,16 @@ def build(t):
     pool = sorted(pool, key=lambda c: -(c["amount"] or 0))
     focus = pool[:5]
 
+    # --- Recent clients with NO deal value logged (can't be ranked → easy to miss).
+    missing_amount = [c for b in ranked for c in b["rows"]
+                      if (c["amount"] or 0) == 0
+                      and c["days_ago"] is not None and c["days_ago"] <= RECENT_DAYS]
+    missing_amount.sort(key=lambda c: c["days_ago"])
+
     return {
         "buckets": ranked, "ranked_by_value": ranked_by_value,
         "focus": focus, "focus_recent": bool(recent),
+        "missing_amount": missing_amount,
         "won_orders": won_orders,
         "open_count": sum(b["count"] for b in ranked),
         "open_value": sum(b["value"] for b in ranked),
@@ -197,7 +204,7 @@ tr:last-child td{border-bottom:none}
 .foot{text-align:center;font-size:10.5px;color:#a9a190;margin-top:14px}
 """
 
-_MAXROWS = 4           # top N clients per money bucket
+_MAXROWS = 3           # top N clients per money bucket
 _PRIMARY = {"presented_no_contract", "contracted_no_order", "needs_presentation"}
 
 
@@ -261,6 +268,24 @@ def _focus(b):
     return rows
 
 
+def _missing(b):
+    """Recent clients with no amount entered — flag them so a value gets added and
+    they stop falling out of the ranked focus list."""
+    rows = b.get("missing_amount", [])
+    if not rows:
+        return '<div class="note">All recent clients have a value logged. ✅</div>'
+    items = []
+    for c in rows[:12]:
+        da = c.get("days_ago")
+        rec = ("dated ahead" if (da is not None and da < 0)
+               else (f"{da}d ago" if da is not None else "no date"))
+        lab = f' · {esc(c["label"])}' if c.get("label") else ""
+        items.append(f'<b>{esc(c["client"]) or "—"}</b>'
+                     f'<span style="color:#9a9a9a;font-size:11px"> ({rec}{lab})</span>')
+    more = f' &nbsp;·&nbsp; +{len(rows) - 12} more' if len(rows) > 12 else ""
+    return f'<div class="chips">{" &nbsp;·&nbsp; ".join(items)}{more}</div>'
+
+
 def render(t, b):
     today = cairo_now()
     if not t or not t.get("clients_detail"):
@@ -317,6 +342,10 @@ def render(t, b):
   <div class="card">
     <h3 style="margin-top:0">Who's missing what <span style="font-size:11px;color:#9a9a9a;font-weight:400">— top {_MAXROWS} by value · <span class="stale">amber</span> = &gt;{STALE_DAYS}d untouched</span></h3>
     {sections}
+    <div style="border-top:1px solid #f0eae0;margin-top:9px;padding-top:7px">
+      <div style="font-size:12px;font-weight:700;color:#b06a12">⚠️ Recent clients missing a value <span style="font-weight:400;color:#9a9a9a;font-size:11px">— add their amount so they rank in Focus</span></div>
+      {_missing(b)}
+    </div>
   </div>
 
   <div class="foot">AHD Group sales · auto-generated daily from the live tracker.<br>
