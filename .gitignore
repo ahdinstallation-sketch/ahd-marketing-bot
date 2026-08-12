@@ -4,6 +4,9 @@ cash_report_preview.pdf
 followup_report.html
 followup_preview.pdf
 followup_preview.png
+followup_print.pdf
+print_followup.log
+print_followup.launchd.log
 .sent_marker
 .cash_sent_marker
 .followup_sent_marker
