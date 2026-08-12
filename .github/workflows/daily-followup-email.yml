@@ -1,0 +1,65 @@
+name: Daily Client Follow-up Email
+
+on:
+  workflow_dispatch:           # manual "Run workflow" button + external pinger
+    inputs:
+      force:
+        description: "Send now, ignoring the 08:00–21:00 Cairo window + once-per-day dedupe"
+        type: boolean
+        default: true           # manual button = test send; the pinger passes false
+  schedule:
+    # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
+    # fire several times across the morning so at least one lands in the send
+    # window; the script sends on the first run at/after 08:00 Cairo and dedupes
+    # to once per day (marker persisted via actions/cache below). Times are Cairo
+    # DST (UTC+3): 08:20, 08:50, 09:20, 09:50, 10:20, 11:20, 13:20.
+    # The script itself skips Fridays (weekend) — cron still fires but no send.
+    - cron: "20 5 * * *"
+    - cron: "50 5 * * *"
+    - cron: "20 6 * * *"
+    - cron: "50 6 * * *"
+    - cron: "20 7 * * *"
+    - cron: "20 8 * * *"
+    - cron: "20 10 * * *"
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Compute Cairo date
+        run: echo "CAIRO_DATE=$(TZ=Africa/Cairo date +%F)" >> "$GITHUB_ENV"
+      - name: Restore once-per-day send marker
+        # First run of the Cairo day misses (script sends + writes the marker, which
+        # is saved to cache at job end). Later same-day runs hit and the script skips.
+        uses: actions/cache@v4
+        with:
+          path: .followup_sent_marker
+          key: followup-sent-${{ env.CAIRO_DATE }}
+      - name: Build and send client follow-up report
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          FOLLOWUP_RECIPIENTS: ${{ secrets.FOLLOWUP_RECIPIENTS }}
+        # Manual dispatch with force=true → send now (test). The external pinger
+        # dispatches with force=false, so it (like the schedule) goes through the
+        # script's 08:00–21:00 window + once-per-day dedupe — no duplicate sends.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            python followup_report.py --force
+          else
+            python followup_report.py
+          fi
+      - name: Upload follow-up report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: followup-report-html
+          path: followup_report.html
+          if-no-files-found: ignore

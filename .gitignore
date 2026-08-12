@@ -1,8 +1,12 @@
 report.html
 cash_report.html
 cash_report_preview.pdf
+followup_report.html
+followup_preview.pdf
+followup_preview.png
 .sent_marker
 .cash_sent_marker
+.followup_sent_marker
 *.json
 .env
 .secrets
