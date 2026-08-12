@@ -66,6 +66,47 @@ def num(s):
         return 0.0
 
 
+# ---- USD → EGP normalisation for the sales tracker ----------------------------
+# The team sometimes types a deal's Amount in USD but forgets to mark it as USD (or
+# to fill the separate "Amount in EGP" column). Those land as suspiciously small
+# numbers for a premium kitchen/wardrobe project (a real EGP contract is hundreds of
+# thousands to millions; an unmarked USD one shows as a few thousand to ~tens of k).
+# We treat any un-flagged Amount below USD_SUSPECT_MAX_EGP as USD and convert it to
+# EGP at the live rate so the pipeline totals aren't understated.
+USD_SUSPECT_MAX_EGP = float(os.environ.get("USD_SUSPECT_MAX_EGP", "100000") or 100000)
+_USD_EGP_FALLBACK = 50.0          # used only if the live lookup + env override both fail
+_usd_egp_cache = None
+
+
+def usd_egp_rate():
+    """Live USD→EGP rate (cached per process). Order: USD_EGP_RATE env override →
+    keyless open.er-api.com → hard fallback. Never raises."""
+    global _usd_egp_cache
+    if _usd_egp_cache is not None:
+        return _usd_egp_cache
+    env = (os.environ.get("USD_EGP_RATE") or "").strip()
+    if env:
+        try:
+            r = float(env)
+            if r > 0:
+                _usd_egp_cache = r
+                return r
+        except ValueError:
+            pass
+    try:
+        raw = subprocess.run(
+            ["curl", "-sL", "--max-time", "15", "https://open.er-api.com/v6/latest/USD"],
+            capture_output=True, text=True).stdout
+        rate = float(json.loads(raw)["rates"]["EGP"])
+        if 10 < rate < 500:          # sanity band around the plausible EGP rate
+            _usd_egp_cache = rate
+            return rate
+    except Exception:
+        pass
+    _usd_egp_cache = _USD_EGP_FALLBACK
+    return _usd_egp_cache
+
+
 def analyze_leads(rows):
     if not rows:
         return {}
@@ -128,6 +169,10 @@ _ROOM_HEADS = (
     "tv unit", "office", "study", "bathroom", "bath", "dining", "sofa", "cladding",
     "storage", "shoe room", "walk in", "walk-in", "cupboard", "cabinet", "fireplace",
     "doors", "table", "chairs",
+    # Material / surface & area line-items also logged as child rows under a client
+    # (they broke the roll-up and showed up as phantom standalone "clients").
+    "corian", "marble", "granite", "quartz", "countertop", "counter top", "island",
+    "entrance", "intrance", "outdoor", "terrace", "garden", "balcony", "roof",
     "مطبخ", "دريسنج", "غرفة", "دولاب", "ريسبشن", "ريسيبشن", "حمام",
 )
 
@@ -184,6 +229,13 @@ def analyze_tracker(rows):
             grouped.append(cur)
     data = grouped
 
+    # --- Drop LOST deals entirely (the team flags them in the LOST column) so they
+    # don't inflate the funnel, pipeline value, status counts or the follow-up list.
+    _lost_i = idx("LOST")
+    if _lost_i is not None:
+        data = [r for r in data
+                if not (len(r) > _lost_i and r[_lost_i].strip().upper() == "TRUE")]
+
     def tcount(name):
         i = idx(name)
         return sum(1 for r in data if i is not None and len(r) > i
@@ -205,17 +257,30 @@ def analyze_tracker(rows):
     ci = idx("CONTRACTED")
     oi = idx("ORDER")
 
-    def amount_cell(r):
-        """Prefer 'Amount in EGP'; fall back to 'Amount' when the former is blank/zero."""
+    _rate = usd_egp_rate()
+
+    def amount_info(r):
+        """EGP-normalised amount for a row → (egp_value, was_usd_converted).
+
+        'Amount in EGP' (col 12) is the team's explicitly-converted figure — trust it
+        as-is. Otherwise use 'Amount' (col 1); if that is a suspiciously small number
+        for a real project it was almost certainly typed in USD without being marked,
+        so convert it to EGP at the live rate (see USD_SUSPECT_MAX_EGP)."""
         if ai is not None and len(r) > ai and num(r[ai]) > 0:
-            return r[ai].strip()
-        if ai2 is not None and len(r) > ai2 and num(r[ai2]) > 0:
-            return r[ai2].strip()
-        return ""
+            return num(r[ai]), False
+        v = num(r[ai2]) if (ai2 is not None and len(r) > ai2) else 0.0
+        if 0 < v < USD_SUSPECT_MAX_EGP:
+            return round(v * _rate), True
+        return v, False
+
+    def amount_cell(r):
+        """EGP-normalised amount as a display string ('' when there is no amount)."""
+        egp, _ = amount_info(r)
+        return f"{int(egp):,}" if egp else ""
 
     signed = openval = 0.0
     for r in data:
-        v = num(amount_cell(r))
+        v, _ = amount_info(r)
         st = (r[si].strip().upper() if si is not None and len(r) > si else "")
         contr = (len(r) > ci and r[ci].strip().upper() == "TRUE") if ci is not None else False
         if st == "SIGNED CONTRACT" or contr:
@@ -238,11 +303,13 @@ def analyze_tracker(rows):
         ds = [_tracker_date(r[i]) for i in date_idx if len(r) > i]
         ds = [d for d in ds if d]
         bd = max(ds) if ds else None
+        egp, conv = amount_info(r)
         return {
             "client": r[cl].strip() if cl is not None and len(r) > cl else "",
             "rep": r[sp].strip() if sp is not None and len(r) > sp else "",
-            "amount": amount_cell(r),
-            "amount_num": num(amount_cell(r)),
+            "amount": f"{int(egp):,}" if egp else "",
+            "amount_num": egp,
+            "amount_usd_converted": conv,
             "note": r[nt].strip() if nt is not None and len(r) > nt else "",
             "date": bd.isoformat() if bd else None,
             "days_ago": (today - bd).days if bd else None,
@@ -289,6 +356,7 @@ def analyze_tracker(rows):
         rec["stage"] = stage_of(r)
         clients_detail.append(rec)
     out["clients_detail"] = clients_detail
+    out["usd_egp_rate"] = round(_rate, 2)
     return out
 
 

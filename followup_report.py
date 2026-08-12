@@ -124,6 +124,7 @@ def build(t):
             "client": _clean_name(rec.get("client")),
             "rep": _clean_name(rec.get("rep")),
             "amount": rec.get("amount_num") or 0,
+            "usd": bool(rec.get("amount_usd_converted")),
             "days_ago": rec.get("days_ago"),
             "note": _clean_name(rec.get("note")),
             "why": why, "label": label,
@@ -186,6 +187,7 @@ th:first-child,td:first-child{text-align:left}
 thead th{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#9a8c66}
 tr:last-child td{border-bottom:none}
 .stale{color:#b06a12;font-size:10px;font-weight:700}
+.usd{color:#2f6f8f;font-size:9.5px;font-weight:700;background:#eaf2f6;border:1px solid #cfe0e8;border-radius:4px;padding:0 4px;margin-left:4px}
 .rec{background:#fbf7ee;border:1px solid #ece4d2;border-left:3px solid #c8a24a;border-radius:7px;padding:6px 11px;margin:5px 0;font-size:12.5px}
 .rec b{color:#8a6a12}
 .note{font-size:11px;color:#9a9a9a;margin-top:6px}
@@ -207,12 +209,16 @@ def _days_tag(da):
     return f' <span style="color:#9a9a9a;font-size:10.5px">{da}d</span>'
 
 
+def _usd_tag(is_usd):
+    return ' <span class="usd">$→EGP</span>' if is_usd else ""
+
+
 def _client_table(rows):
     body = ""
     for r in rows[:_MAXROWS]:
         amt = fmt(r["amount"]) if r["amount"] else "—"
         body += (f"<tr><td>{esc(r['client']) or '—'}{_days_tag(r['days_ago'])}</td>"
-                 f"<td>{amt}</td></tr>")
+                 f"<td>{amt}{_usd_tag(r.get('usd'))}</td></tr>")
     return (f'<table><thead><tr><th>Client</th><th>Amount (EGP)</th></tr></thead>'
             f'<tbody>{body}</tbody></table>')
 
@@ -250,7 +256,7 @@ def _focus(b):
         recency = f'{da}d ago' if da is not None else 'no date'
         rows += (
             f'<div class="rec"><b>{i}. {esc(c["client"]) or "—"}</b> · '
-            f'<b>{amt} EGP</b> · <span style="color:#8a7a52">{esc(c["label"])}</span>'
+            f'<b>{amt} EGP</b>{_usd_tag(c.get("usd"))} · <span style="color:#8a7a52">{esc(c["label"])}</span>'
             f' <span style="color:#9a9a9a;font-size:11px">· {recency}</span></div>')
     return rows
 
@@ -314,6 +320,7 @@ def render(t, b):
   </div>
 
   <div class="foot">AHD Group sales · auto-generated daily from the live tracker.<br>
+    LOST deals are excluded. <span class="usd">$→EGP</span> = amount looked like unmarked USD, converted at {esc(f"{t.get('usd_egp_rate', 0):.2f}")} EGP/USD.<br>
     Update a client's stage/status in the tracker and it reflects here next run.</div>
 </div></body></html>"""
 
