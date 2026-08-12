@@ -4,23 +4,23 @@ on:
   workflow_dispatch:           # manual "Run workflow" button + external pinger
     inputs:
       force:
-        description: "Send now, ignoring the 08:00–21:00 Cairo window + once-per-day dedupe"
+        description: "Send now, ignoring the 09:00–21:00 Cairo window + once-per-day dedupe"
         type: boolean
         default: true           # manual button = test send; the pinger passes false
   schedule:
     # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
     # fire several times across the morning so at least one lands in the send
-    # window; the script sends on the first run at/after 08:00 Cairo and dedupes
+    # window; the script sends on the first run at/after 09:00 Cairo and dedupes
     # to once per day (marker persisted via actions/cache below). Times are Cairo
-    # DST (UTC+3): 08:20, 08:50, 09:20, 09:50, 10:20, 11:20, 13:20.
+    # DST (UTC+3): 09:05, 09:35, 10:05, 10:35, 11:05, 12:05, 14:05.
     # The script itself skips Fridays (weekend) — cron still fires but no send.
-    - cron: "20 5 * * *"
-    - cron: "50 5 * * *"
-    - cron: "20 6 * * *"
-    - cron: "50 6 * * *"
-    - cron: "20 7 * * *"
-    - cron: "20 8 * * *"
-    - cron: "20 10 * * *"
+    - cron: "5 6 * * *"
+    - cron: "35 6 * * *"
+    - cron: "5 7 * * *"
+    - cron: "35 7 * * *"
+    - cron: "5 8 * * *"
+    - cron: "5 9 * * *"
+    - cron: "5 11 * * *"
 
 jobs:
   send:

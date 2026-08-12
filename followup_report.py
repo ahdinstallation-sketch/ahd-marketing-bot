@@ -33,7 +33,7 @@ DEFAULT_RECIPIENTS = [
     "crm@amrhelmydesigns.com",             # CRM
 ]
 
-SEND_HOUR_CAIRO = 8
+SEND_HOUR_CAIRO = 9
 SEND_WINDOW_END_CAIRO = 21
 SENT_MARKER = os.environ.get("FOLLOWUP_SENT_MARKER") or os.path.join(HERE, ".followup_sent_marker")
 
