@@ -183,10 +183,16 @@ def _is_subroom(name):
 
 
 def analyze_tracker(rows):
-    if not rows or len(rows) < 3:
+    if not rows or len(rows) < 2:
         return {}
-    hdr = rows[1]
-    data = [r for r in rows[2:] if any(r) and r and r[0].strip()]
+    # Locate the header row instead of hard-coding it: the tracker sometimes has a
+    # title/blank row above the column names and sometimes not, so a layout change (e.g.
+    # the top row being deleted) must not shift every column index to None and silently
+    # empty the whole report. Find the row that actually carries the "CLIENT" column.
+    hi = next((i for i, r in enumerate(rows[:4])
+               if any((c or "").strip() == "CLIENT" for c in r)), 0)
+    hdr = rows[hi]
+    data = [r for r in rows[hi + 1:] if any(r) and r and r[0].strip()]
 
     def idx(n):
         for i, h in enumerate(hdr):
