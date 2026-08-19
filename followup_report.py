@@ -40,6 +40,7 @@ SENT_MARKER = os.environ.get("FOLLOWUP_SENT_MARKER") or os.path.join(HERE, ".fol
 
 STALE_DAYS = 90    # a deal untouched longer than this is flagged as ageing
 RECENT_DAYS = 120  # "recent" cutoff for the focus list
+HIGH_TICKET_EGP = float(os.environ.get("HIGH_TICKET_EGP", "2000000") or 2000000)  # "chase first" cutoff
 
 
 # ---------- formatting ----------
@@ -150,6 +151,11 @@ def build(t):
     pool = sorted(pool, key=lambda c: -(c["amount"] or 0))
     focus = pool[:5]
 
+    # --- High-ticket "chase first": every open deal at/above the threshold, biggest first.
+    high_ticket = sorted(
+        [c for c in everyone if (c["amount"] or 0) >= HIGH_TICKET_EGP],
+        key=lambda c: -(c["amount"] or 0))
+
     # --- Recent clients with NO deal value logged (can't be ranked → easy to miss).
     missing_amount = [c for b in ranked for c in b["rows"]
                       if (c["amount"] or 0) == 0
@@ -159,6 +165,8 @@ def build(t):
     return {
         "buckets": ranked, "ranked_by_value": ranked_by_value,
         "focus": focus, "focus_recent": bool(recent),
+        "high_ticket": high_ticket,
+        "high_ticket_value": sum(c["amount"] or 0 for c in high_ticket),
         "missing_amount": missing_amount,
         "won_orders": won_orders,
         "open_count": sum(b["count"] for b in ranked),
@@ -203,7 +211,8 @@ tr:last-child td{border-bottom:none}
 .foot{text-align:center;font-size:10.5px;color:#a9a190;margin-top:14px}
 """
 
-_MAXROWS = 5           # top N clients per money bucket
+_MAXROWS = 3           # top N clients per money bucket (kept tight so the page fits one A4)
+_HT_MAXROWS = 10       # top N high-ticket clients shown in the "chase first" table
 _PRIMARY = {"presented_no_contract", "needs_presentation"}
 
 
@@ -265,6 +274,27 @@ def _focus(b):
             f'<b>{amt} EGP</b>{_usd_tag(c.get("usd"))} · <span style="color:#8a7a52">{esc(c["label"])}</span>'
             f' <span style="color:#9a9a9a;font-size:11px">· {recency}</span></div>')
     return rows
+
+
+def _high_ticket(b):
+    """The 'chase first' list: every open deal at/above HIGH_TICKET_EGP, biggest first,
+    each tagged with its single next step and how long it's been sitting."""
+    rows = b.get("high_ticket", [])
+    if not rows:
+        return ('<div class="note">No open deals at/above '
+                f'{fmt(HIGH_TICKET_EGP)} EGP right now.</div>')
+    body = ""
+    for i, c in enumerate(rows[:_HT_MAXROWS], 1):
+        amt = fmt(c["amount"]) if c["amount"] else "—"
+        body += (f'<tr><td><b>{i}.</b> {esc(c["client"]) or "—"}{_days_tag(c["days_ago"])}</td>'
+                 f'<td style="color:#8a7a52">{esc(c["label"])}</td>'
+                 f'<td><b>{amt}</b>{_usd_tag(c.get("usd"))}</td></tr>')
+    more = ""
+    if len(rows) > _HT_MAXROWS:
+        extra = sum(r["amount"] or 0 for r in rows[_HT_MAXROWS:])
+        more = f'<div class="more">+{len(rows) - _HT_MAXROWS} more ≥ {fmt(HIGH_TICKET_EGP)} EGP · {fmt(extra)} EGP</div>'
+    return (f'<table><thead><tr><th>Client</th><th>Next step</th>'
+            f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>{more}')
 
 
 def _missing(b):
@@ -334,8 +364,8 @@ def render(t, b):
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">🔎 Focus on these clients today <span style="font-size:11px;color:#9a9a9a;font-weight:400">— biggest {"recent " if b['focus_recent'] else ""}tickets</span></h3>
-    {_focus(b)}
+    <h3 style="margin-top:0">💎 High-ticket — chase first <span style="font-size:11px;color:#9a9a9a;font-weight:400">— open deals ≥ {fmt(HIGH_TICKET_EGP)} EGP · {len(b['high_ticket'])} clients · {fmt(b['high_ticket_value'])} EGP</span></h3>
+    {_high_ticket(b)}
   </div>
 
   <div class="card">
