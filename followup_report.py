@@ -41,6 +41,7 @@ SENT_MARKER = os.environ.get("FOLLOWUP_SENT_MARKER") or os.path.join(HERE, ".fol
 STALE_DAYS = 90    # a deal untouched longer than this is flagged as ageing
 RECENT_DAYS = 120  # "recent" cutoff for the focus list
 HIGH_TICKET_EGP = float(os.environ.get("HIGH_TICKET_EGP", "2000000") or 2000000)  # "chase first" cutoff
+MID_TICKET_EGP = float(os.environ.get("MID_TICKET_EGP", "1000000") or 1000000)    # second-tier "also chase" floor (1M–HIGH band)
 
 
 # ---------- formatting ----------
@@ -155,6 +156,10 @@ def build(t):
     high_ticket = sorted(
         [c for c in everyone if (c["amount"] or 0) >= HIGH_TICKET_EGP],
         key=lambda c: -(c["amount"] or 0))
+    # --- Mid-ticket "also chase": the 1M–HIGH band (no overlap with high_ticket).
+    mid_ticket = sorted(
+        [c for c in everyone if MID_TICKET_EGP <= (c["amount"] or 0) < HIGH_TICKET_EGP],
+        key=lambda c: -(c["amount"] or 0))
 
     # --- Recent clients with NO deal value logged (can't be ranked → easy to miss).
     missing_amount = [c for b in ranked for c in b["rows"]
@@ -167,6 +172,8 @@ def build(t):
         "focus": focus, "focus_recent": bool(recent),
         "high_ticket": high_ticket,
         "high_ticket_value": sum(c["amount"] or 0 for c in high_ticket),
+        "mid_ticket": mid_ticket,
+        "mid_ticket_value": sum(c["amount"] or 0 for c in mid_ticket),
         "missing_amount": missing_amount,
         "won_orders": won_orders,
         "open_count": sum(b["count"] for b in ranked),
@@ -183,7 +190,7 @@ body{margin:0;background:#f4f1ea;font-family:-apple-system,Segoe UI,Roboto,Helve
 .head{text-align:center;padding:2px 0 8px}
 .head h1{margin:0;font-size:19px;letter-spacing:.5px;color:#1c1c1c}
 .head .sub{font-size:12px;color:#8a7a52;margin-top:3px}
-.card{background:#fff;border:1px solid #e7e0cf;border-radius:10px;padding:11px 14px;margin:9px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card{background:#fff;border:1px solid #e7e0cf;border-radius:10px;padding:9px 14px;margin:7px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .kpis{display:flex;gap:8px;flex-wrap:wrap}
 .kpi{flex:1;min-width:120px;background:#fbf9f3;border:1px solid #ece4d2;border-radius:9px;padding:9px 12px}
 .kpi .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#9a8c66}
@@ -212,7 +219,8 @@ tr:last-child td{border-bottom:none}
 """
 
 _MAXROWS = 3           # top N clients per money bucket (kept tight so the page fits one A4)
-_HT_MAXROWS = 10       # top N high-ticket clients shown in the "chase first" table
+_HT_MAXROWS = 7        # top N high-ticket clients shown in the "chase first" table
+_MT_MAXROWS = 8        # top N mid-ticket (1M–2M) clients shown in the "also chase" chips
 _PRIMARY = {"presented_no_contract", "needs_presentation"}
 
 
@@ -276,25 +284,45 @@ def _focus(b):
     return rows
 
 
-def _high_ticket(b):
-    """The 'chase first' list: every open deal at/above HIGH_TICKET_EGP, biggest first,
-    each tagged with its single next step and how long it's been sitting."""
-    rows = b.get("high_ticket", [])
+def _ticket_table(rows, floor_egp, cap):
+    """Render a value-tier table (Client · Next step · Amount), biggest first, capped at
+    `cap` rows with a '+N more' summary. Shared by the high- and mid-ticket sections."""
     if not rows:
         return ('<div class="note">No open deals at/above '
-                f'{fmt(HIGH_TICKET_EGP)} EGP right now.</div>')
+                f'{fmt(floor_egp)} EGP right now.</div>')
     body = ""
-    for i, c in enumerate(rows[:_HT_MAXROWS], 1):
+    for i, c in enumerate(rows[:cap], 1):
         amt = fmt(c["amount"]) if c["amount"] else "—"
         body += (f'<tr><td><b>{i}.</b> {esc(c["client"]) or "—"}{_days_tag(c["days_ago"])}</td>'
                  f'<td style="color:#8a7a52">{esc(c["label"])}</td>'
                  f'<td><b>{amt}</b>{_usd_tag(c.get("usd"))}</td></tr>')
     more = ""
-    if len(rows) > _HT_MAXROWS:
-        extra = sum(r["amount"] or 0 for r in rows[_HT_MAXROWS:])
-        more = f'<div class="more">+{len(rows) - _HT_MAXROWS} more ≥ {fmt(HIGH_TICKET_EGP)} EGP · {fmt(extra)} EGP</div>'
+    if len(rows) > cap:
+        extra = sum(r["amount"] or 0 for r in rows[cap:])
+        more = f'<div class="more">+{len(rows) - cap} more ≥ {fmt(floor_egp)} EGP · {fmt(extra)} EGP</div>'
     return (f'<table><thead><tr><th>Client</th><th>Next step</th>'
             f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>{more}')
+
+
+def _high_ticket(b):
+    """The 'chase first' list: every open deal at/above HIGH_TICKET_EGP, biggest first."""
+    return _ticket_table(b.get("high_ticket", []), HIGH_TICKET_EGP, _HT_MAXROWS)
+
+
+def _mid_ticket(b):
+    """Second tier (1M–2M): a compact names+amounts chip line so the email stays one page."""
+    rows = b.get("mid_ticket", [])
+    if not rows:
+        return ('<div class="note">No open deals '
+                f'{fmt(MID_TICKET_EGP)}–{fmt(HIGH_TICKET_EGP)} EGP right now.</div>')
+    items = [f'<b>{esc(c["client"]) or "—"}</b>'
+             f'<span style="color:#9a9a9a;font-size:11px"> ({fmt(c["amount"])})</span>'
+             for c in rows[:_MT_MAXROWS]]
+    more = ""
+    if len(rows) > _MT_MAXROWS:
+        extra = sum(r["amount"] or 0 for r in rows[_MT_MAXROWS:])
+        more = f' &nbsp;·&nbsp; +{len(rows) - _MT_MAXROWS} more · {fmt(extra)} EGP'
+    return f'<div class="chips">{" &nbsp;·&nbsp; ".join(items)}{more}</div>'
 
 
 def _missing(b):
@@ -366,6 +394,11 @@ def render(t, b):
   <div class="card">
     <h3 style="margin-top:0">💎 High-ticket — chase first <span style="font-size:11px;color:#9a9a9a;font-weight:400">— open deals ≥ {fmt(HIGH_TICKET_EGP)} EGP · {len(b['high_ticket'])} clients · {fmt(b['high_ticket_value'])} EGP</span></h3>
     {_high_ticket(b)}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">📈 Mid-ticket — also chase <span style="font-size:11px;color:#9a9a9a;font-weight:400">— open deals {fmt(MID_TICKET_EGP)}–{fmt(HIGH_TICKET_EGP)} EGP · {len(b['mid_ticket'])} clients · {fmt(b['mid_ticket_value'])} EGP</span></h3>
+    {_mid_ticket(b)}
   </div>
 
   <div class="card">
