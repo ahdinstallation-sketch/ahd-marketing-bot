@@ -160,6 +160,11 @@ def build(t):
     mid_ticket = sorted(
         [c for c in everyone if MID_TICKET_EGP <= (c["amount"] or 0) < HIGH_TICKET_EGP],
         key=lambda c: -(c["amount"] or 0))
+    # --- The chase list: EVERY open deal ≥ MID_TICKET_EGP (1M and up), biggest first —
+    # one ranked table shown in full on a single page.
+    chase = sorted(
+        [c for c in everyone if (c["amount"] or 0) >= MID_TICKET_EGP],
+        key=lambda c: -(c["amount"] or 0))
 
     # --- Recent clients with NO deal value logged (can't be ranked → easy to miss).
     missing_amount = [c for b in ranked for c in b["rows"]
@@ -174,6 +179,8 @@ def build(t):
         "high_ticket_value": sum(c["amount"] or 0 for c in high_ticket),
         "mid_ticket": mid_ticket,
         "mid_ticket_value": sum(c["amount"] or 0 for c in mid_ticket),
+        "chase": chase,
+        "chase_value": sum(c["amount"] or 0 for c in chase),
         "missing_amount": missing_amount,
         "won_orders": won_orders,
         "open_count": sum(b["count"] for b in ranked),
@@ -186,11 +193,11 @@ def build(t):
 CSS = """
 @page{size:A4;margin:8mm}
 body{margin:0;background:#f4f1ea;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#2b2b2b}
-.wrap{max-width:700px;margin:0 auto;padding:14px 16px 20px}
+.wrap{max-width:700px;margin:0 auto;padding:10px 16px 8px}
 .head{text-align:center;padding:2px 0 8px}
 .head h1{margin:0;font-size:19px;letter-spacing:.5px;color:#1c1c1c}
 .head .sub{font-size:12px;color:#8a7a52;margin-top:3px}
-.card{background:#fff;border:1px solid #e7e0cf;border-radius:10px;padding:9px 14px;margin:7px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card{background:#fff;border:1px solid #e7e0cf;border-radius:10px;padding:8px 14px;margin:5px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .kpis{display:flex;gap:8px;flex-wrap:wrap}
 .kpi{flex:1;min-width:120px;background:#fbf9f3;border:1px solid #ece4d2;border-radius:9px;padding:9px 12px}
 .kpi .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#9a8c66}
@@ -207,6 +214,9 @@ th,td{padding:4px 12px;text-align:right;border-bottom:1px solid #f2ede2}
 th:first-child,td:first-child{text-align:left}
 thead th{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#9a8c66}
 tr:last-child td{border-bottom:none}
+table.chase{font-size:10px}
+table.chase th,table.chase td{padding:0.5px 10px}
+table.chase thead th{font-size:8.5px}
 .stale{color:#b06a12;font-size:10px;font-weight:700}
 .usd{color:#2f6f8f;font-size:9.5px;font-weight:700;background:#eaf2f6;border:1px solid #cfe0e8;border-radius:4px;padding:0 4px;margin-left:4px}
 .rec{background:#fbf7ee;border:1px solid #ece4d2;border-left:3px solid #c8a24a;border-radius:7px;padding:6px 11px;margin:5px 0;font-size:12.5px}
@@ -215,14 +225,8 @@ tr:last-child td{border-bottom:none}
 .more{font-size:11px;color:#9a8c66;padding:5px 12px}
 .chips{font-size:12px;color:#555;margin-top:8px}
 .chips b{color:#1c1c1c}
-.foot{text-align:center;font-size:10.5px;color:#a9a190;margin-top:14px}
+.foot{text-align:center;font-size:10px;color:#a9a190;margin-top:8px}
 """
-
-_MAXROWS = 3           # top N clients per money bucket (kept tight so the page fits one A4)
-_HT_MAXROWS = 7        # top N high-ticket clients shown in the "chase first" table
-_MT_MAXROWS = 8        # top N mid-ticket (1M–2M) clients shown in the "also chase" chips
-_PRIMARY = {"presented_no_contract", "needs_presentation"}
-
 
 def _days_tag(da):
     if da is None:
@@ -236,93 +240,22 @@ def _usd_tag(is_usd):
     return ' <span class="usd">$→EGP</span>' if is_usd else ""
 
 
-def _client_table(rows):
-    body = ""
-    for r in rows[:_MAXROWS]:
-        amt = fmt(r["amount"]) if r["amount"] else "—"
-        body += (f"<tr><td>{esc(r['client']) or '—'}{_days_tag(r['days_ago'])}</td>"
-                 f"<td>{amt}{_usd_tag(r.get('usd'))}</td></tr>")
-    return (f'<table><thead><tr><th>Client</th><th>Amount (EGP)</th></tr></thead>'
-            f'<tbody>{body}</tbody></table>')
-
-
-def _funnel(t):
-    f = t.get("funnel", {})
-    stages = [("Session", "SESSION"), ("Offer / quote", "OFFER"),
-              ("Initial presentation", "INITIAL PRESENTATION"),
-              ("Final presentation", "FINAL PRESENTATION AFTER CLIENT COMMENTS"),
-              ("Contracted", "CONTRACTED"), ("Order (production)", "ORDER")]
-    top = f.get("SESSION", 0) or 1
-    rows = ""
-    prev = None
-    for label, key in stages:
-        n = f.get(key, 0)
-        w = max(2, round(100 * n / top))
-        drop = ""
-        if prev is not None and prev > 0:
-            lost = prev - n
-            if lost > 0:
-                drop = f' <span style="color:#b3261e;font-size:10.5px">−{lost}</span>'
-        rows += (f'<div class="frow"><div class="cap">{esc(label)}</div>'
-                 f'<div class="track"><div class="fill" style="width:{w}%"></div></div>'
-                 f'<div class="n">{n}{drop}</div></div>')
-        prev = n
-    return f'<div class="funnel">{rows}</div>'
-
-
-def _focus(b):
-    """Named, customer-oriented focus list: the biggest recent tickets to chase."""
-    rows = ""
-    for i, c in enumerate(b["focus"], 1):
-        amt = fmt(c["amount"]) if c["amount"] else "—"
-        da = c.get("days_ago")
-        recency = f'{da}d ago' if da is not None else 'no date'
-        rows += (
-            f'<div class="rec"><b>{i}. {esc(c["client"]) or "—"}</b> · '
-            f'<b>{amt} EGP</b>{_usd_tag(c.get("usd"))} · <span style="color:#8a7a52">{esc(c["label"])}</span>'
-            f' <span style="color:#9a9a9a;font-size:11px">· {recency}</span></div>')
-    return rows
-
-
-def _ticket_table(rows, floor_egp, cap):
-    """Render a value-tier table (Client · Next step · Amount), biggest first, capped at
-    `cap` rows with a '+N more' summary. Shared by the high- and mid-ticket sections."""
+def _chase_all(b):
+    """Every open deal ≥ MID_TICKET_EGP (1M and up), biggest first, shown in full on one
+    page. Deals ≥ HIGH_TICKET_EGP get a 💎 marker so the top tier still stands out."""
+    rows = b.get("chase", [])
     if not rows:
         return ('<div class="note">No open deals at/above '
-                f'{fmt(floor_egp)} EGP right now.</div>')
+                f'{fmt(MID_TICKET_EGP)} EGP right now.</div>')
     body = ""
-    for i, c in enumerate(rows[:cap], 1):
+    for i, c in enumerate(rows, 1):
         amt = fmt(c["amount"]) if c["amount"] else "—"
-        body += (f'<tr><td><b>{i}.</b> {esc(c["client"]) or "—"}{_days_tag(c["days_ago"])}</td>'
+        gem = "💎 " if (c["amount"] or 0) >= HIGH_TICKET_EGP else ""
+        body += (f'<tr><td><b>{i}.</b> {gem}{esc(c["client"]) or "—"}{_days_tag(c["days_ago"])}</td>'
                  f'<td style="color:#8a7a52">{esc(c["label"])}</td>'
                  f'<td><b>{amt}</b>{_usd_tag(c.get("usd"))}</td></tr>')
-    more = ""
-    if len(rows) > cap:
-        extra = sum(r["amount"] or 0 for r in rows[cap:])
-        more = f'<div class="more">+{len(rows) - cap} more ≥ {fmt(floor_egp)} EGP · {fmt(extra)} EGP</div>'
-    return (f'<table><thead><tr><th>Client</th><th>Next step</th>'
-            f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>{more}')
-
-
-def _high_ticket(b):
-    """The 'chase first' list: every open deal at/above HIGH_TICKET_EGP, biggest first."""
-    return _ticket_table(b.get("high_ticket", []), HIGH_TICKET_EGP, _HT_MAXROWS)
-
-
-def _mid_ticket(b):
-    """Second tier (1M–2M): a compact names+amounts chip line so the email stays one page."""
-    rows = b.get("mid_ticket", [])
-    if not rows:
-        return ('<div class="note">No open deals '
-                f'{fmt(MID_TICKET_EGP)}–{fmt(HIGH_TICKET_EGP)} EGP right now.</div>')
-    items = [f'<b>{esc(c["client"]) or "—"}</b>'
-             f'<span style="color:#9a9a9a;font-size:11px"> ({fmt(c["amount"])})</span>'
-             for c in rows[:_MT_MAXROWS]]
-    more = ""
-    if len(rows) > _MT_MAXROWS:
-        extra = sum(r["amount"] or 0 for r in rows[_MT_MAXROWS:])
-        more = f' &nbsp;·&nbsp; +{len(rows) - _MT_MAXROWS} more · {fmt(extra)} EGP'
-    return f'<div class="chips">{" &nbsp;·&nbsp; ".join(items)}{more}</div>'
+    return (f'<table class="chase"><thead><tr><th>Client</th><th>Next step</th>'
+            f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>')
 
 
 def _missing(b):
@@ -362,22 +295,6 @@ def render(t, b):
         <div class="val">{b['won_orders']}</div><div class="sm">orders placed</div></div>
     </div>"""
 
-    sections, chips = "", []
-    for bk in b["buckets"]:
-        rows = bk["rows"]
-        if bk["key"] in _PRIMARY:
-            sections += f"""
-        <div class="bkt">
-          <div class="bh"><div class="bt">{bk['title']}</div>
-            <div class="bv">{bk['count']} clients · {fmt(bk['value'])} EGP</div></div>
-          {_client_table(rows)}
-        </div>"""
-        else:
-            val = f" · {fmt(bk['value'])} EGP" if bk["value"] else ""
-            chips.append(f"{bk['title']}: <b>{bk['count']}</b>{val}")
-    if chips:
-        sections += f'<div class="chips">Earlier stages — {" &nbsp;·&nbsp; ".join(chips)}</div>'
-
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><style>{CSS}</style></head>
 <body><div class="wrap">
@@ -392,27 +309,16 @@ def render(t, b):
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">💎 High-ticket — chase first <span style="font-size:11px;color:#9a9a9a;font-weight:400">— open deals ≥ {fmt(HIGH_TICKET_EGP)} EGP · {len(b['high_ticket'])} clients · {fmt(b['high_ticket_value'])} EGP</span></h3>
-    {_high_ticket(b)}
+    <h3 style="margin-top:0">💎 Clients to chase — 1M and up <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— open deals ≥ {fmt(MID_TICKET_EGP)} EGP · {len(b['chase'])} clients · {fmt(b['chase_value'])} EGP · 💎 = ≥ {fmt(HIGH_TICKET_EGP)}</span></h3>
+    {_chase_all(b)}
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">📈 Mid-ticket — also chase <span style="font-size:11px;color:#9a9a9a;font-weight:400">— open deals {fmt(MID_TICKET_EGP)}–{fmt(HIGH_TICKET_EGP)} EGP · {len(b['mid_ticket'])} clients · {fmt(b['mid_ticket_value'])} EGP</span></h3>
-    {_mid_ticket(b)}
+    <h3 style="margin-top:0">⚠️ Clients missing a value <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— add their amount in the tracker so they rank above</span></h3>
+    {_missing(b)}
   </div>
 
-  <div class="card">
-    <h3 style="margin-top:0">Who's missing what <span style="font-size:11px;color:#9a9a9a;font-weight:400">— top {_MAXROWS} by value · <span class="stale">amber</span> = &gt;{STALE_DAYS}d untouched</span></h3>
-    {sections}
-    <div style="border-top:1px solid #f0eae0;margin-top:9px;padding-top:7px">
-      <div style="font-size:12px;font-weight:700;color:#b06a12">⚠️ Recent clients missing a value <span style="font-weight:400;color:#9a9a9a;font-size:11px">— add their amount so they rank in Focus</span></div>
-      {_missing(b)}
-    </div>
-  </div>
-
-  <div class="foot">AHD Group sales · auto-generated daily from the live tracker.<br>
-    LOST deals are excluded. <span class="usd">$→EGP</span> = amount looked like unmarked USD, converted at {esc(f"{t.get('usd_egp_rate', 0):.2f}")} EGP/USD.<br>
-    Update a client's stage/status in the tracker and it reflects here next run.</div>
+  <div class="foot">Auto-generated daily from the live tracker · LOST deals excluded · <span class="usd">$→EGP</span> converted at {esc(f"{t.get('usd_egp_rate', 0):.2f}")} EGP/USD · update stage/status in the tracker to change this.</div>
 </div></body></html>"""
 
 
