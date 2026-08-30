@@ -39,7 +39,8 @@ DEFAULT_RECIPIENTS = [
 SEND_HOUR_CAIRO = 9
 # GitHub's free cron scheduler is best-effort and can fire hours late, so we accept
 # any run from 09:00 up to (but not including) this hour, and dedupe to once/day.
-SEND_WINDOW_END_CAIRO = 21
+# Widened 21→23 so a very-late fire still delivers same-day instead of being dropped.
+SEND_WINDOW_END_CAIRO = 23
 # Once-per-Cairo-day send marker (persisted across GitHub Actions runs via actions/cache).
 SENT_MARKER = os.environ.get("SENT_MARKER") or os.path.join(HERE, ".sent_marker")
 # Pipeline-leak recency window. Default ~6 months; override with PIPELINE_LEAK_DAYS.

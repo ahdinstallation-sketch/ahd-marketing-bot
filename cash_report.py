@@ -42,7 +42,9 @@ DEFAULT_RECIPIENTS = [
 ]
 
 SEND_HOUR_CAIRO = 8
-SEND_WINDOW_END_CAIRO = 21
+# Widened 21→23: GitHub cron can fire hours late, so accept any run 08:00–23:00 Cairo
+# (dedupe keeps it once/day) rather than dropping a late fire and missing the day.
+SEND_WINDOW_END_CAIRO = 23
 SENT_MARKER = os.environ.get("CASH_SENT_MARKER") or os.path.join(HERE, ".cash_sent_marker")
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",

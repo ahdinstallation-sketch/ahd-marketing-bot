@@ -1,30 +1,35 @@
 name: Daily Client Follow-up Email
 
 on:
-  workflow_dispatch:           # manual "Run workflow" button + external pinger
+  workflow_dispatch:           # manual "Run workflow" button (also usable by a future external pinger)
     inputs:
       force:
-        description: "Send now, ignoring the 09:00–21:00 Cairo window + once-per-day dedupe"
+        description: "Send now, ignoring the 09:00–23:00 Cairo window + once-per-day dedupe"
         type: boolean
-        default: true           # manual button = test send; the pinger passes false
+        default: true           # manual button = test send; a pinger would pass false
       recipients:
         description: "Override recipients for THIS run only (comma-separated). Blank = use the secret."
         type: string
         default: ""
   schedule:
-    # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late. We
-    # fire several times across the morning so at least one lands in the send
-    # window; the script sends on the first run at/after 09:00 Cairo and dedupes
-    # to once per day (marker persisted via actions/cache below). Times are Cairo
-    # DST (UTC+3): 09:05, 09:35, 10:05, 10:35, 11:05, 12:05, 14:05.
+    # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late,
+    # and the delay is worst at the top of the hour (:00/:05/:30/:35) when every
+    # repo on the platform is scheduled. We fire on de-congested odd minutes,
+    # front-loaded near 09:00 Cairo with a thinning fallback tail through the
+    # afternoon. The script sends on the FIRST run at/after 09:00 Cairo and
+    # dedupes to once per day (marker persisted via actions/cache below), and the
+    # send window now runs to 23:00 Cairo so a very-late fire still lands same-day
+    # instead of being dropped. Times are Cairo DST (UTC+3).
     # The script itself skips Fridays (weekend) — cron still fires but no send.
-    - cron: "5 6 * * *"
-    - cron: "35 6 * * *"
-    - cron: "5 7 * * *"
-    - cron: "35 7 * * *"
-    - cron: "5 8 * * *"
-    - cron: "5 9 * * *"
-    - cron: "5 11 * * *"
+    - cron: "7 6 * * *"     # ~09:07 Cairo
+    - cron: "27 6 * * *"    # ~09:27
+    - cron: "47 6 * * *"    # ~09:47
+    - cron: "13 7 * * *"    # ~10:13
+    - cron: "43 7 * * *"    # ~10:43
+    - cron: "23 8 * * *"    # ~11:23
+    - cron: "23 9 * * *"    # ~12:23  (fallback)
+    - cron: "23 11 * * *"   # ~14:23  (fallback)
+    - cron: "23 13 * * *"   # ~16:23  (last-resort, still same day)
 
 jobs:
   send:
