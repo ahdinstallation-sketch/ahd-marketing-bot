@@ -19,7 +19,7 @@ Usage:
   python3 daily_report.py             # build + send (guarded to 9 AM Cairo unless --force)
   python3 daily_report.py --force     # build + send now regardless of the hour
 """
-import os, sys, json, html, datetime, smtplib, ssl
+import os, sys, json, html, datetime, smtplib, ssl, time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 try:
@@ -823,6 +823,31 @@ def _smtp_settings(user):
     return "smtp.office365.com", 587            # STARTTLS
 
 
+# All three daily reports (marketing, cash, follow-up) send through this one
+# function, from the SAME mailbox. A transient SMTP refusal — Gmail rate-limiting,
+# too many concurrent logins, a dropped TLS handshake — used to raise straight out
+# of here, killing the job with no email and no warning. Retry a few times before
+# giving up, and return False rather than raising so the caller's once-per-day
+# marker logic stays correct (a failed send must NOT mark the day as done).
+SMTP_ATTEMPTS = 3
+SMTP_BACKOFF = (5, 15, 45)   # seconds to wait BEFORE attempts 2 and 3
+
+
+def _deliver(host, port, user, pw, recipients, msg):
+    """One SMTP delivery attempt. Raises on failure."""
+    ctx = ssl.create_default_context()
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=60) as server:
+            server.login(user, pw)
+            server.sendmail(user, recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=60) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.login(user, pw)
+            server.sendmail(user, recipients, msg.as_string())
+
+
 def send_email(subject, html_body, recipients):
     # New generic names, with backward-compatible GMAIL_* fallback.
     user = (os.environ.get("MAIL_USER") or os.environ.get("GMAIL_USER") or "").strip()
@@ -838,19 +863,28 @@ def send_email(subject, html_body, recipients):
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText("Your client doesn't support HTML. Open in an HTML-capable client.", "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    ctx = ssl.create_default_context()
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port, context=ctx) as server:
-            server.login(user, pw)
-            server.sendmail(user, recipients, msg.as_string())
-    else:
-        with smtplib.SMTP(host, port) as server:
-            server.ehlo()
-            server.starttls(context=ctx)
-            server.login(user, pw)
-            server.sendmail(user, recipients, msg.as_string())
-    print(f"Sent to: {', '.join(recipients)} via {host}:{port}")
-    return True
+
+    for attempt in range(1, SMTP_ATTEMPTS + 1):
+        try:
+            _deliver(host, port, user, pw, recipients, msg)
+            print(f"Sent to: {', '.join(recipients)} via {host}:{port} "
+                  f"(attempt {attempt}/{SMTP_ATTEMPTS})")
+            return True
+        except smtplib.SMTPAuthenticationError as e:
+            # Bad/revoked app password. Retrying cannot help and repeated failed
+            # logins make Gmail harden further — fail fast and say so.
+            print(f"SMTP auth rejected for {user} — not retrying: {e}")
+            return False
+        except (smtplib.SMTPException, OSError) as e:
+            wait = SMTP_BACKOFF[min(attempt - 1, len(SMTP_BACKOFF) - 1)]
+            if attempt == SMTP_ATTEMPTS:
+                print(f"SMTP attempt {attempt}/{SMTP_ATTEMPTS} failed: "
+                      f"{type(e).__name__}: {e} — giving up.")
+                return False
+            print(f"SMTP attempt {attempt}/{SMTP_ATTEMPTS} failed: "
+                  f"{type(e).__name__}: {e} — retrying in {wait}s.")
+            time.sleep(wait)
+    return False
 
 
 def main():
@@ -879,6 +913,9 @@ def main():
         print("DRY RUN — not sending.")
         return 0
     if not force:
+        if cairo_now().weekday() == 4:  # Friday (Mon=0 … Fri=4) — weekend, no send
+            print("Cairo day is Friday — skipping.")
+            return 0
         if already_sent_today():
             print("Already sent today — skipping (dedupe).")
             return 0
@@ -888,7 +925,12 @@ def main():
                   f"{SEND_HOUR_CAIRO}:00–{SEND_WINDOW_END_CAIRO}:00 — skipping "
                   f"(use --force to override).")
             return 0
-    send_email(subject, html_body, recipients)
+    # Only mark the day done if the mail actually left. Marking unconditionally
+    # (the old behaviour) burned all of the day's remaining retry slots on a
+    # single failure, turning one transient error into a full-day miss.
+    if not send_email(subject, html_body, recipients):
+        print("Send failed — NOT marking today as sent, so a later run can retry.")
+        return 1
     mark_sent_today()
     return 0
 

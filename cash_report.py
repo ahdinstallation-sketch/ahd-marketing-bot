@@ -560,8 +560,13 @@ def main():
             print(f"Cairo hour is {hour}, outside send window "
                   f"{SEND_HOUR_CAIRO}:00–{SEND_WINDOW_END_CAIRO}:00 — skipping.")
             return 0
-    if send_email(subject, html_body, recipients):
-        _mark_sent_today()
+    # Exit non-zero on a failed send so the GitHub job goes red and the
+    # failure-alert step fires. Silently returning 0 made a failed send look
+    # exactly like a successful one.
+    if not send_email(subject, html_body, recipients):
+        print("Send failed — NOT marking today as sent, so a later run can retry.")
+        return 1
+    _mark_sent_today()
     return 0
 
 

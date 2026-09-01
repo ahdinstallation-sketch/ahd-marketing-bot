@@ -21,15 +21,29 @@ on:
     # send window now runs to 23:00 Cairo so a very-late fire still lands same-day
     # instead of being dropped. Times are Cairo DST (UTC+3).
     # The script itself skips Fridays (weekend) — cron still fires but no send.
-    - cron: "7 6 * * *"     # ~09:07 Cairo
-    - cron: "27 6 * * *"    # ~09:27
-    - cron: "47 6 * * *"    # ~09:47
-    - cron: "13 7 * * *"    # ~10:13
-    - cron: "43 7 * * *"    # ~10:43
-    - cron: "23 8 * * *"    # ~11:23
-    - cron: "23 9 * * *"    # ~12:23  (fallback)
-    - cron: "23 11 * * *"   # ~14:23  (fallback)
-    - cron: "23 13 * * *"   # ~16:23  (last-resort, still same day)
+    #
+    # MINUTE LANE: :18 and :48. Each of the three reports owns a distinct pair of
+    # minutes (cash :06/:36, follow-up :18/:48, marketing :28/:58) so no two can
+    # ever fire in the same minute, whatever hours are added later. Until 1 Sep
+    # 2026 this workflow and daily-marketing-email.yml shared all nine minutes —
+    # they always fired together into the SAME Gmail mailbox, and on 1 Sep both
+    # went missing while the cash report arrived normally.
+    # test_cron_collision.py enforces the lanes; run it before editing these.
+    - cron: "18 6 * * *"    # ~09:18 Cairo
+    - cron: "48 6 * * *"    # ~09:48
+    - cron: "18 7 * * *"    # ~10:18
+    - cron: "48 7 * * *"    # ~10:48
+    - cron: "18 8 * * *"    # ~11:18
+    - cron: "18 9 * * *"    # ~12:18  (fallback)
+    - cron: "48 10 * * *"   # ~13:48  (fallback)
+    - cron: "48 12 * * *"   # ~15:48  (fallback)
+    - cron: "18 14 * * *"   # ~17:18  (last-resort, still same day)
+
+# A late-firing run must never overlap an earlier one of the same workflow —
+# two concurrent runs would race on the send marker and could double-send.
+concurrency:
+  group: daily-followup-email
+  cancel-in-progress: false
 
 jobs:
   send:
@@ -72,3 +86,18 @@ jobs:
           name: followup-report-html
           path: followup_report.html
           if-no-files-found: ignore
+      # Without this, a failed send is completely silent — the only symptom is an
+      # email that never arrives, which is exactly how 1 Sep went unnoticed.
+      - name: Alert Ahmed that the send failed
+        if: failure()
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          ALERT_RECIPIENTS: ${{ secrets.ALERT_RECIPIENTS }}
+        run: |
+          python alert.py \
+            --report "AHD Client Follow-up" \
+            --reason "The scheduled GitHub Actions run failed before the email was sent." \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

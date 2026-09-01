@@ -1,0 +1,79 @@
+name: Daily Email Watchdog
+
+# Catches the one failure mode nothing else can see: a scheduled run that never
+# started. Each report workflow has an `if: failure()` alert, but that only fires
+# if the job runs at all — and GitHub's cron is documented as best-effort, free to
+# fire hours late or drop a run entirely. On 1 Sep 2026 the Client Follow-up and
+# Marketing Pulse simply never arrived and nothing anywhere reported it.
+#
+# This fires after every scheduled slot for all three reports has passed, sends
+# anything still missing, and emails Ahmed to say so.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only report what is missing; send nothing"
+        type: boolean
+        default: false
+  schedule:
+    # ~20:11 Cairo (17:11 UTC). Deliberately off the top of the hour, and after
+    # the last-resort slots of all three reports (latest is 13:53 UTC / 16:53
+    # Cairo), so the watchdog can never race a normal scheduled run.
+    - cron: "11 17 * * *"
+
+concurrency:
+  group: daily-watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Compute Cairo date
+        run: echo "CAIRO_DATE=$(TZ=Africa/Cairo date +%F)" >> "$GITHUB_ENV"
+
+      # RESTORE-ONLY (actions/cache/restore, not actions/cache). The full cache
+      # action also SAVES at job end, which would write these keys from here and
+      # corrupt the report workflows' own once-per-day dedupe. We only ever read.
+      - name: Restore cash send marker
+        uses: actions/cache/restore@v4
+        with:
+          path: .cash_sent_marker
+          key: cash-sent-${{ env.CAIRO_DATE }}
+      - name: Restore follow-up send marker
+        uses: actions/cache/restore@v4
+        with:
+          path: .followup_sent_marker
+          key: followup-sent-${{ env.CAIRO_DATE }}
+      - name: Restore marketing send marker
+        uses: actions/cache/restore@v4
+        with:
+          path: .sent_marker
+          key: sent-${{ env.CAIRO_DATE }}
+
+      - name: Check for missing reports and recover
+        env:
+          META_TOKEN: ${{ secrets.META_TOKEN }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+          CASH_RECIPIENTS: ${{ secrets.CASH_RECIPIENTS }}
+          FOLLOWUP_RECIPIENTS: ${{ secrets.FOLLOWUP_RECIPIENTS }}
+          ALERT_RECIPIENTS: ${{ secrets.ALERT_RECIPIENTS }}
+          CASH_SHEET_ID: ${{ secrets.CASH_SHEET_ID }}
+          CASHIN_SHEET_ID: ${{ secrets.CASHIN_SHEET_ID }}
+          CASHIN_GID: ${{ secrets.CASHIN_GID }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            python watchdog.py --dry-run
+          else
+            python watchdog.py
+          fi
