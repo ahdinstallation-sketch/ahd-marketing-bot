@@ -7,6 +7,10 @@ on:
         description: "Send now, ignoring the 09:00–23:00 Cairo window + once-per-day dedupe"
         type: boolean
         default: true           # manual button = test send; a pinger would pass false
+      recipients:
+        description: "Override recipients for THIS run only (comma-separated). Blank = use the secret."
+        type: string
+        default: ""
   schedule:
     # GitHub cron is UTC and best-effort — scheduled runs can fire HOURS late,
     # and the delay is worst at the top of the hour (:00/:05/:30/:35) when every
@@ -66,7 +70,7 @@ jobs:
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+          RECIPIENTS: ${{ inputs.recipients || secrets.RECIPIENTS }}
           CASHIN_SHEET_ID: ${{ secrets.CASHIN_SHEET_ID }}
           CASHIN_GID: ${{ secrets.CASHIN_GID }}
         # Manual dispatch with force=true → send now (test). The external pinger
