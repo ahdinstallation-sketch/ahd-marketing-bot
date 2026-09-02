@@ -321,6 +321,30 @@ def analyze_tracker(rows):
             "days_ago": (today - bd).days if bd else None,
         }
 
+    # Contract-handover checklist columns. The team ticks these in the tracker as
+    # each step is completed; the follow-up bot reads them (public CSV, no auth) to
+    # know which handover tasks are still outstanding and keep reminding until done.
+    # Column headers are matched leniently so minor wording tweaks don't silently
+    # blank a task (e.g. "MS ACCESS" / "MEP" / "TECH DWG" / "RENDERS").
+    _HANDOVER_COLS = [
+        ("ms_access", ("MS ACCESS", "MS-ACCESS", "MSACCESS", "DELIVERY SYSTEM")),
+        ("mep",       ("MEP", "MEP DRAWINGS", "MEP DWG")),
+        ("tech_dwg",  ("TECH DWG", "TECHNICAL DRAWINGS", "TECH DRAWINGS", "TECHNICAL DWG")),
+        ("renders",   ("RENDERS", "FINAL RENDERS", "RENDERS + PRESENTATION", "RENDERS AND PRESENTATION")),
+    ]
+
+    def _hv_idx(names):
+        for i, h in enumerate(hdr):
+            if h.strip().upper() in names:
+                return i
+        return None
+
+    _handover_idx = [(k, _hv_idx(names)) for k, names in _HANDOVER_COLS]
+
+    def _handover_tasks(r):
+        return {k: bool(i is not None and len(r) > i and r[i].strip().upper() == "TRUE")
+                for k, i in _handover_idx}
+
     stuck = []
     for r in data:
         if ci is None or oi is None:
@@ -328,7 +352,9 @@ def analyze_tracker(rows):
         contr = len(r) > ci and r[ci].strip().upper() == "TRUE"
         order = len(r) > oi and r[oi].strip().upper() == "TRUE"
         if contr and not order:
-            stuck.append(deal(r))
+            d = deal(r)
+            d["tasks"] = _handover_tasks(r)
+            stuck.append(d)
     out["contracted_no_order"] = sorted(stuck, key=lambda d: -d["amount_num"])
 
     def status_list(want):
