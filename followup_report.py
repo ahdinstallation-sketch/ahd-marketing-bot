@@ -25,26 +25,10 @@ from daily_report import cairo_now, send_email
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Direct link to the tracker tab so the team can tick the handover checkboxes.
-TRACKER_URL = (f"https://docs.google.com/spreadsheets/d/{SHEETS['ahd_tracker']}"
-               f"/edit#gid={TRACKER_GID}")
-
-# ---- Contract → factory handover tracking -----------------------------------
-# The order must reach the factory (ORDER ticked) within 3 weeks of the contract,
-# otherwise the row goes RED. The clock starts when the bot FIRST sees a client as
-# CONTRACTED — that first-seen date is persisted in this tiny JSON file, which the
-# GitHub Actions workflow carries across runs via actions/cache (same mechanism as
-# the once-per-day send marker). No server / no Google write-access needed: the
-# team marks each task done by ticking a checkbox in the tracker, which the bot
-# reads back on the next run.
-HANDOVER_STATE = os.environ.get("HANDOVER_STATE") or os.path.join(HERE, ".handover_state.json")
-FACTORY_SLA_DAYS = int(os.environ.get("FACTORY_SLA_DAYS", "21") or 21)  # 3 weeks
-HANDOVER_TASKS = [
-    ("ms_access", "Order on MS Access delivery system"),
-    ("mep",       "MEP drawings started"),
-    ("tech_dwg",  "Technical drawings started"),
-    ("renders",   "Final renders + presentation sent to client"),
-]
+# NOTE: the contract → factory handover checklist is NOT handled here. It is a
+# SEPARATE, instant email fired the moment a client is ticked CONTRACTED, run by a
+# Google Apps Script bound to the tracker sheet (see handover_apps_script.gs). This
+# follow-up email keeps only the daily pipeline + the "clients this month" list.
 
 DEFAULT_RECIPIENTS = [
     "ahmed.helmy@amrhelmydesigns.com",     # Ahmed (me)
@@ -211,24 +195,7 @@ def build(t):
     }
 
 
-# ---------- this-month + contract-handover builders ----------
-
-def _load_handover_state():
-    try:
-        with open(HANDOVER_STATE, encoding="utf-8") as fh:
-            d = json.load(fh)
-            return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_handover_state(state):
-    try:
-        with open(HANDOVER_STATE, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, ensure_ascii=False, indent=1)
-    except OSError:
-        pass
-
+# ---------- this-month builder ----------
 
 def this_month(t):
     """Clients whose latest tracked activity falls in the current Cairo month —
@@ -263,49 +230,6 @@ def this_month(t):
     return {"rows": shown, "value": sum(r["amount"] or 0 for r in shown),
             "label": f"{now:%B %Y}", "fallback": fallback,
             "month_count": len(rows)}
-
-
-def build_handover(t):
-    """Contracts awaiting factory handover. For each CONTRACTED-but-no-ORDER client:
-    record/carry its first-seen contract date (starts the 3-week clock), read the
-    team's task checkboxes from the tracker, and flag RED once >3 weeks have passed
-    with the order still not sent to the factory. A client drops off this list the
-    moment ORDER is ticked."""
-    today = cairo_now().date()
-    prev = _load_handover_state()
-    state, items = {}, []
-    for rec in t.get("contracted_no_order", []):
-        name = _clean_name(rec.get("client"))
-        if not name:
-            continue
-        first = prev.get(name) or today.isoformat()   # start the clock the day we first see it
-        state[name] = first
-        try:
-            days = (today - datetime.date.fromisoformat(first)).days
-        except ValueError:
-            days = 0
-        tasks = rec.get("tasks") or {}
-        done = sum(1 for k, _ in HANDOVER_TASKS if tasks.get(k))
-        items.append({
-            "client": name,
-            "rep": _clean_name(rec.get("rep")),
-            "amount": rec.get("amount_num") or 0,
-            "usd": bool(rec.get("amount_usd_converted")),
-            "first_seen": first,
-            "days": days,
-            "new": first == today.isoformat(),
-            "overdue": days > FACTORY_SLA_DAYS,
-            "tasks": tasks,
-            "done": done,
-            "all_done": done == len(HANDOVER_TASKS),
-        })
-    # Persist the (pruned to currently-open) clocks so tomorrow carries them forward.
-    _save_handover_state(state)
-    # Overdue first, then longest-waiting, then biggest deal.
-    items.sort(key=lambda d: (not d["overdue"], -d["days"], -(d["amount"] or 0)))
-    return {"items": items,
-            "overdue": sum(1 for i in items if i["overdue"]),
-            "value": sum(i["amount"] or 0 for i in items)}
 
 
 # ---------- render ----------
@@ -348,15 +272,6 @@ table.chase thead th{font-size:8.5px}
 .foot{text-align:center;font-size:10px;color:#a9a190;margin-top:8px}
 .hv-hint{font-size:11px;color:#8a8a8a;margin:0 0 6px}
 .hv-hint a{color:#8a6a12;font-weight:600;text-decoration:none}
-table.handover td{vertical-align:top;padding:7px 12px;border-bottom:1px solid #f2ede2}
-tr.hv-row.overdue td{background:#fdecec}
-.newbadge{display:inline-block;background:#1f7a44;color:#fff;font-size:8.5px;font-weight:700;letter-spacing:.4px;border-radius:4px;padding:1px 5px;margin-right:5px;vertical-align:middle}
-.sla-red{color:#c0392b;font-size:11px;font-weight:700}
-.sla-ok{color:#8a8a8a;font-size:10.5px}
-.hv-checks{text-align:left;width:56%}
-.hv-task{font-size:11px;line-height:1.55}
-.hv-done{color:#1f7a44}
-.hv-todo{color:#b06a12;font-weight:600}
 """
 
 def _days_tag(da):
@@ -428,43 +343,7 @@ def _month_list(m):
             f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>')
 
 
-def _handover(h):
-    """Contract → factory handover checklist. Each contracted client shows the 4
-    handover tasks (ticked in the tracker) and a 3-week factory countdown that
-    turns RED when overdue. Clients drop off once the order is sent (ORDER ticked)."""
-    items = h.get("items", [])
-    hint = (f'<p class="hv-hint">Tick <b>MS ACCESS · MEP · TECH DWG · RENDERS</b> in the '
-            f'<a href="{esc(TRACKER_URL)}">sales tracker</a> as each step is done — a client '
-            f'clears this list automatically when <b>ORDER</b> (sent to factory) is ticked. '
-            f'Target: order at the factory within {FACTORY_SLA_DAYS} days of contract.</p>')
-    if not items:
-        return hint + '<div class="note">No contracts awaiting factory handover right now. ✅</div>'
-    rows = ""
-    for it in items:
-        badge = '<span class="newbadge">NEW</span>' if it["new"] else ""
-        if it["overdue"]:
-            sla = (f'<span class="sla-red">🔴 {it["days"]}d since contract — '
-                   f'OVERDUE (&gt;{FACTORY_SLA_DAYS}d to factory)</span>')
-        else:
-            left = FACTORY_SLA_DAYS - it["days"]
-            sla = (f'<span class="sla-ok">{it["days"]}d since contract · '
-                   f'{left}d left to factory</span>')
-        checks = ""
-        for k, lbl in HANDOVER_TASKS:
-            ok = it["tasks"].get(k)
-            cls, mark = ("hv-done", "✅") if ok else ("hv-todo", "⬜")
-            checks += f'<div class="hv-task {cls}">{mark} {esc(lbl)}</div>'
-        rowcls = "hv-row overdue" if it["overdue"] else "hv-row"
-        rep = f'{esc(it["rep"])} · ' if it["rep"] else ""
-        rows += (f'<tr class="{rowcls}"><td>{badge} <b>{esc(it["client"])}</b>'
-                 f'<div style="font-size:10px;color:#9a9a9a;margin-top:1px">{rep}'
-                 f'{fmt(it["amount"])} EGP{_usd_tag(it["usd"])} · {it["done"]}/{len(HANDOVER_TASKS)} done</div>'
-                 f'<div style="margin-top:3px">{sla}</div></td>'
-                 f'<td class="hv-checks">{checks}</td></tr>')
-    return hint + f'<table class="handover"><tbody>{rows}</tbody></table>'
-
-
-def render(t, b, m=None, h=None):
+def render(t, b, m=None):
     today = cairo_now()
     if not t or not t.get("clients_detail"):
         return "<html><body><p>Follow-up unavailable — could not read the sales tracker.</p></body></html>"
@@ -499,11 +378,6 @@ def render(t, b, m=None, h=None):
   <div class="card">
     <h3 style="margin-top:0">🗓️ Clients this month <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— {esc((m or {}).get('label',''))} · {(m or {}).get('month_count',0)} clients · {fmt((m or {}).get('value',0))} EGP</span></h3>
     {_month_list(m or {})}
-  </div>
-
-  <div class="card" style="border-color:#e6c9c9">
-    <h3 style="margin-top:0">🏭 Contract handover — action required <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— {len((h or {}).get('items',[]))} awaiting factory · {(h or {}).get('overdue',0)} overdue · {fmt((h or {}).get('value',0))} EGP</span></h3>
-    {_handover(h or {})}
   </div>
 
   <div class="card">
@@ -548,16 +422,14 @@ def main():
     t = analyze_tracker(fetch(SHEETS["ahd_tracker"], TRACKER_GID))
     b = build(t)
     m = this_month(t)
-    h = build_handover(t)
-    html_body = render(t, b, m, h)
+    html_body = render(t, b, m)
     out = os.path.join(HERE, "followup_report.html")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(html_body)
     print(f"Wrote {out}")
     print(json.dumps({"open_count": b["open_count"], "open_value": round(b["open_value"]),
                       "won_orders": b["won_orders"],
-                      "this_month": len(m["rows"]),
-                      "handover_awaiting": len(h["items"]), "handover_overdue": h["overdue"],
+                      "this_month": m["month_count"],
                       "buckets": [(x["key"], x["count"], round(x["value"])) for x in b["buckets"]]},
                      ensure_ascii=False, indent=1))
 

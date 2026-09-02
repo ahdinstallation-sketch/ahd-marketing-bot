@@ -63,18 +63,6 @@ jobs:
         with:
           path: .followup_sent_marker
           key: followup-sent-${{ env.CAIRO_DATE }}
-      - name: Restore contract-handover clock state
-        # Unlike the send marker (which SHOULD reset daily), this file must CARRY
-        # FORWARD: it stores the first date each client was seen CONTRACTED so the
-        # 3-week factory SLA can be timed. The date-keyed primary key changes daily
-        # (so a fresh cache is saved each day), while restore-keys falls back to the
-        # most recent previous day's state — a rolling, self-updating cache.
-        uses: actions/cache@v4
-        with:
-          path: .handover_state.json
-          key: handover-state-${{ env.CAIRO_DATE }}
-          restore-keys: |
-            handover-state-
       - name: Build and send client follow-up report
         env:
           MAIL_USER: ${{ secrets.MAIL_USER }}
