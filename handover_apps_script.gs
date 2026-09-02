@@ -22,6 +22,8 @@
 var RECIPIENTS   = 'orders@amrhelmydesigns.com, crm@amrhelmydesigns.com, ahdh@amrhelmydesigns.com';
 var SLA_DAYS     = 21;                 // order must reach the factory within 3 weeks of contract
 var REMINDER_HOUR = 8;                 // daily reminder send hour (sheet's timezone)
+var TRACKER_GID  = 57990844;           // the "CLIENT STATUS LIST" tab (pinned so we never
+                                       // target another tab that also has a CLIENT header)
 
 // Tracker column headers the script relies on (matched case-insensitively).
 var COL = {
@@ -251,8 +253,14 @@ function wrap_(inner) {
 function getTracker_() {
   var ss = SpreadsheetApp.getActive();
   var sheets = ss.getSheets();
+  // Prefer the pinned tab by its gid so we can never target another tab that also
+  // happens to carry a CLIENT header.
   for (var i = 0; i < sheets.length; i++) {
-    try { if (headerRowIndex_(sheets[i], true) > 0) return sheets[i]; } catch (e) {}
+    if (sheets[i].getSheetId() === TRACKER_GID) return sheets[i];
+  }
+  // Fallback: the first tab that carries a CLIENT header (in case the gid changed).
+  for (var j = 0; j < sheets.length; j++) {
+    try { if (headerRowIndex_(sheets[j], true) > 0) return sheets[j]; } catch (e) {}
   }
   return ss.getActiveSheet();
 }
