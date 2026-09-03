@@ -103,6 +103,50 @@ function sendTestEmail() {
     htmlBody: instantHtml_(sample), noReply: false });
 }
 
+// One-off: send the REAL current handover-reminder digest to Ezz only (does not
+// touch RECIPIENTS / the team send). Falls back to a sample if nothing is pending.
+function sendHandoverContentToEzz() {
+  var to = 'ezzeldin.hussein@amrhelmydesigns.com';
+  var sh = getTracker_();
+  var hr = headerRowIndex_(sh);
+  var lastRow = sh.getLastRow();
+  var headers = sh.getRange(hr, 1, 1, sh.getLastColumn()).getValues()[0];
+  var cContract = findCol_(headers, COL.contracted);
+  var cOrder    = findCol_(headers, COL.order);
+  var pending = [], overdue = 0;
+  if (lastRow > hr && cContract >= 0 && cOrder >= 0) {
+    var vals = sh.getRange(hr + 1, 1, lastRow - hr, sh.getLastColumn()).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var rowVals = vals[i];
+      if (!isChecked_(rowVals[cContract])) continue;
+      if (isChecked_(rowVals[cOrder])) continue;
+      var info = rowInfo_(sh, headers, hr, hr + 1 + i, rowVals);
+      var remaining = TASKS.filter(function (t) {
+        var c = findCol_(headers, [t.key]);
+        return c < 0 || !isChecked_(rowVals[c]);
+      });
+      if (remaining.length === 0) continue;
+      info.remaining = remaining;
+      if (info.days > SLA_DAYS) { info.overdue = true; overdue++; }
+      pending.push(info);
+    }
+  }
+  if (pending.length) {
+    pending.sort(function (a, b) {
+      return (a.overdue === b.overdue) ? (b.days - a.days) : (a.overdue ? -1 : 1);
+    });
+    var subject = '🏭 Contract handover — ' + pending.length + ' pending'
+                + (overdue ? (' · ' + overdue + ' OVERDUE 🔴') : '');
+    MailApp.sendEmail({ to: to, subject: subject, htmlBody: reminderHtml_(pending) });
+  } else {
+    var sample = { client: 'SAMPLE — no live handovers pending right now', rep: 'Yosra',
+                   amount: '250,000', days: 0, overdue: false, remaining: TASKS.slice() };
+    MailApp.sendEmail({ to: to,
+      subject: '🏭 Contract handover — sample (nothing pending today)',
+      htmlBody: instantHtml_(sample) });
+  }
+}
+
 // ============================================================================
 // INSTANT — fires the moment a client is ticked CONTRACTED
 // ============================================================================
