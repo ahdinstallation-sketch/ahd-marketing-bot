@@ -19,7 +19,7 @@
  */
 
 // ---------------- CONFIG (edit these if needed) ----------------
-var RECIPIENTS   = 'orders@amrhelmydesigns.com, crm@amrhelmydesigns.com, ahdh@amrhelmydesigns.com';
+var RECIPIENTS   = 'orders@amrhelmydesigns.com, crm@amrhelmydesigns.com, ahdh@amrhelmydesigns.com, ezzeldin.hussein@amrhelmydesigns.com';
 var SLA_DAYS     = 21;                 // order must reach the factory within 3 weeks of contract
 var REMINDER_HOUR = 8;                 // daily reminder send hour (sheet's timezone)
 var TRACKER_GID  = 57990844;           // the "CLIENT STATUS LIST" tab (pinned so we never
@@ -87,6 +87,20 @@ function setup() {
 
   SpreadsheetApp.getActive().toast(
     'Handover automation is live: instant email on CONTRACTED + daily reminders.', 'AHD Handover', 8);
+}
+
+// ============================================================================
+// TEST — sends ONE sample handover email to a single address (safe to delete).
+// Run this to preview the email without ticking a real client or spamming the team.
+// ============================================================================
+function sendTestEmail() {
+  var to = 'ahmed.helmy@amrhelmydesigns.com';
+  var sample = { client: 'TEST CLIENT — Ahmed preview', rep: 'Yosra',
+                 amount: '250,000', days: 0, overdue: false, remaining: [] };
+  MailApp.sendEmail({
+    to: to,
+    subject: '[TEST] 🏭 New contract — ' + sample.client + ': start factory handover',
+    htmlBody: instantHtml_(sample), noReply: false });
 }
 
 // ============================================================================
