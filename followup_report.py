@@ -37,6 +37,7 @@ DEFAULT_RECIPIENTS = [
     "orders@amrhelmydesigns.com",          # Orders
     "crm@amrhelmydesigns.com",             # CRM
     "mohamed.fahmy@amrhelmydesigns.com",   # Mohamed Fahmy
+    "ezzeldin.hussein@amrhelmydesigns.com", # Ezzeldin Hussein
 ]
 
 SEND_HOUR_CAIRO = 9
