@@ -191,6 +191,40 @@ def build_context(meta, sheets):
         "w_label": f"{_dm(w_since)}–{_dm(w_until)}",
         "m_label": f"{m_since.day}–{_dm(m_until)}",
     }
+
+    # ---- NEW simple overview: PAID / LEADS / MEASUREMENTS, MTD + month-by-month ----
+    # Spend history comes from Meta (per-month), leads & measurements are counted
+    # from the sales team's own leads sheet (leads_detail), bucketed by lead month.
+    lead_monthly = (al.get("monthly") or {})   # {ym: {leads, measurements}}
+    spend_by_ym = {m.get("ym"): (m.get("spend") or 0)
+                   for m in (meta.get("monthly_spend") or [])}
+    today_o = cairo_now().date()
+    seq = []
+    f_o = today_o.replace(day=1)
+    for _ in range(6):
+        seq.append(f_o)
+        f_o = (f_o - datetime.timedelta(days=1)).replace(day=1)
+    seq = list(reversed(seq))
+    months = []
+    for fd in seq:
+        ym = f"{fd:%Y-%m}"
+        lm = lead_monthly.get(ym, {}) or {}
+        months.append({
+            "ym": ym, "label": f"{fd:%b}",
+            "spend": spend_by_ym.get(ym, 0) or 0,
+            "leads": lm.get("leads", 0) or 0,
+            "measurements": lm.get("measurements", 0) or 0,
+        })
+    cur = lead_monthly.get(f"{today_o:%Y-%m}", {}) or {}
+    ctx["overview"] = {
+        "months": months,
+        "m_label": ctx["dates"]["m_label"],
+        "spend_mtd": m_spend,
+        "leads_mtd": cur.get("leads", 0) or 0,
+        "meas_mtd": cur.get("measurements", 0) or 0,
+        "has_spend": any(m["spend"] for m in months),
+        "has_leads": bool(lead_monthly),
+    }
     return ctx
 
 
@@ -217,6 +251,13 @@ def render(ctx):
           📅 Numbers below are for <b>{esc(ylabel)}</b> (the last full day)</div>
       </div>
       <div style="padding:18px 22px;border:1px solid #eee;border-top:none;background:#fff">""")
+
+    # 0) NEW — simple at-a-glance overview (Paid / Leads / Measurements), MTD +
+    #    month-by-month bar charts. Everything else moves below the divider.
+    P.append(_overview_block(ctx))
+    P.append("""<div style="border-top:2px dashed #ddd;margin:4px 0 12px"></div>
+      <div style="font-size:12px;color:#999;font-weight:700;text-transform:uppercase;
+        letter-spacing:.5px;margin-bottom:10px">▾ Full detailed report</div>""")
 
     # 1) headline numbers — each carries the exact date/range it covers
     P.append(f"""<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
@@ -343,6 +384,69 @@ def _kpi(label, value):
     return (f'<div style="flex:1;min-width:150px;background:#f5f1e6;border-radius:6px;'
             f'padding:10px 12px"><div style="font-size:11px;color:#888">{esc(label)}</div>'
             f'<div style="font-size:20px;font-weight:700">{value}</div></div>')
+
+
+def _bars(rows, key, color, prefix=""):
+    """Email-safe horizontal bar chart: one row per month, bar width proportional
+    to the largest value. Uses nested <div> widths (no JS, no images) so it renders
+    in Gmail/Outlook. `rows` = the ctx overview months list."""
+    mx = max([ (r.get(key) or 0) for r in rows ] + [1])
+    out = ['<table role="presentation" style="width:100%;border-collapse:collapse;'
+           'font-size:12px;margin:2px 0 4px">']
+    for r in rows:
+        v = r.get(key) or 0
+        pct = int(round(100 * v / mx)) if mx else 0
+        if v and pct < 3:
+            pct = 3
+        out.append(
+            f'<tr>'
+            f'<td style="padding:3px 8px 3px 0;color:#666;white-space:nowrap;width:34px">{esc(r["label"])}</td>'
+            f'<td style="padding:3px 0;width:100%">'
+            f'<div style="background:#ece7d8;border-radius:3px;height:15px">'
+            f'<div style="background:{color};height:15px;border-radius:3px;width:{pct}%"></div>'
+            f'</div></td>'
+            f'<td style="padding:3px 0 3px 8px;text-align:right;white-space:nowrap;'
+            f'font-weight:700;color:#333;width:70px">{fmt(v, prefix)}</td>'
+            f'</tr>')
+    out.append('</table>')
+    return "".join(out)
+
+
+def _overview_block(ctx):
+    """The new, simple top-of-email view: three MTD numbers (paid, leads,
+    measurements) + a month-by-month bar chart for each. Sits above everything."""
+    ov = ctx.get("overview") or {}
+    rows = ov.get("months") or []
+    ml = ov.get("m_label", "")
+    kpis = (
+        _kpi(f"💰 Paid · MTD ({ml})", fmt(ov.get("spend_mtd"), "EGP "))
+        + _kpi(f"🧲 Leads · MTD ({ml})", fmt(ov.get("leads_mtd")))
+        + _kpi(f"📏 Measurements · MTD ({ml})", fmt(ov.get("meas_mtd")))
+    )
+    if ov.get("has_spend"):
+        spend_chart = _bars(rows, "spend", "#c9a227", "EGP ")
+    else:
+        spend_chart = ('<div style="font-size:12px;color:#999;padding:4px 0">'
+                       'Spend history unavailable this run (Meta token not loaded).</div>')
+    leads_chart = _bars(rows, "leads", "#2f6fb0")
+    meas_chart = _bars(rows, "measurements", "#2f9e6e")
+    return (
+        '<div style="background:#faf7ef;border:1px solid #e8dfc4;border-radius:8px;'
+        'padding:14px 16px;margin-bottom:14px">'
+        '<div style="font-size:16px;font-weight:800;color:#111">📊 At a glance — Paid · Leads · Measurements</div>'
+        '<div style="font-size:11px;color:#8a8266;margin-bottom:12px">The three numbers that matter — '
+        'this month, and month by month.</div>'
+        f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">{kpis}</div>'
+        '<div style="font-weight:700;font-size:13px;margin:2px 0 3px;color:#8a6d1b">💰 Ad spend (EGP) — month by month</div>'
+        f'{spend_chart}'
+        '<div style="font-weight:700;font-size:13px;margin:14px 0 3px;color:#24557f">🧲 Leads — month by month</div>'
+        f'{leads_chart}'
+        '<div style="font-weight:700;font-size:13px;margin:14px 0 3px;color:#1f7a53">📏 Measurements — month by month</div>'
+        f'{meas_chart}'
+        '<div style="font-size:10px;color:#aaa;margin-top:10px">Leads &amp; measurements counted from the '
+        'sales leads sheet by lead month; measurements = leads that reached the paid-measurement stage. '
+        'Current month is still in progress.</div>'
+        '</div>')
 
 
 def _cpl_big(label, value, sub=""):

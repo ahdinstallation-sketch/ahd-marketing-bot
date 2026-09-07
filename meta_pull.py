@@ -90,6 +90,44 @@ def _dates():
     }
 
 
+def _month_windows(n=6):
+    """The last n calendar months as {ym, label, since, until}, oldest→newest.
+    The current month runs 1st → yesterday (still accumulating); past months are
+    full 1st → last-day. Used to draw the month-by-month spend chart."""
+    today = _today_cairo()
+    f = today.replace(day=1)
+    wins = []
+    for _ in range(n):
+        if f.year == today.year and f.month == today.month:
+            until = today - datetime.timedelta(days=1)
+            if until < f:
+                until = f
+        else:
+            nxt = (f + datetime.timedelta(days=32)).replace(day=1)
+            until = nxt - datetime.timedelta(days=1)
+        wins.append({"ym": f"{f:%Y-%m}", "label": f"{f:%b}",
+                     "since": str(f), "until": str(until)})
+        f = (f - datetime.timedelta(days=1)).replace(day=1)
+    return list(reversed(wins))
+
+
+def _monthly_spend(n=6):
+    """Total ad spend per calendar month across EGP accounts only (monetary sum
+    across currencies would be meaningless). One insights call per month/account."""
+    egp_ids = [a["id"] for a in ACCOUNTS if a.get("currency") == "EGP"]
+    series = []
+    for w in _month_windows(n):
+        total = 0.0
+        for aid in egp_ids:
+            res = _insights(aid, {"since": w["since"], "until": w["until"]})
+            if "error" in res:
+                continue
+            for row in res.get("data", []):
+                total += _f(row, "spend")
+        series.append({"ym": w["ym"], "label": w["label"], "spend": round(total, 2)})
+    return series
+
+
 def _f(d, k, default=0.0):
     try:
         return float(d.get(k, default))
@@ -358,6 +396,7 @@ def pull_meta():
         return snap
     for acc in ACCOUNTS:
         snap["accounts"].append(_account_block(acc))
+    snap["monthly_spend"] = _monthly_spend(6)
     for page in PAGES:
         snap["pages"].append(_page_top_posts(page))
     return snap

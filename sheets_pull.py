@@ -597,6 +597,21 @@ def analyze_ahd_leads(rows, gid_note=""):
         "sale_stage": l["sale_stage"], "sale_comment": l["sale_comment"],
     } for l in pool[:12]]
     out["recent_window"] = bool(recent)
+    # Compact month-by-month breakdown (survives the leads_detail pop in pull_sheets):
+    # leads per calendar month + how many reached the paid-measurement stage. Feeds
+    # the "At a glance" overview in the daily marketing email.
+    monthly = {}
+    for l in leads:
+        dd = l.get("date")
+        if not dd:
+            continue
+        ym = dd[:7]
+        rec = monthly.setdefault(ym, {"leads": 0, "measurements": 0})
+        rec["leads"] += 1
+        st = _norm(l.get("sale_stage"))
+        if "measur" in st or "مقاس" in (l.get("sale_stage") or ""):
+            rec["measurements"] += 1
+    out["monthly"] = monthly
     # Compact full list, used to correlate lead names against the sales tracker.
     out["leads_detail"] = [{
         "name": l["full_name"], "phone": l["phone"], "date": l["date"],
