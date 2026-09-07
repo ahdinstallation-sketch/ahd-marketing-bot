@@ -803,19 +803,55 @@ def _meas_date(s):
         return None
 
 
+_MONTHS3 = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+_MONI = {m: i for i, m in enumerate(_MONTHS3, 1)}
+
+
+def _next_ym(ym):
+    y, m = int(ym[:4]), int(ym[5:7])
+    return f"{y + (m // 12):04d}-{(m % 12) + 1:02d}"
+
+
+def _meas_has(v):
+    """A measurement/payment cell that actually holds a date-ish value, not the
+    hand-entered placeholders the team uses for 'not yet' (-, plan, free, unpaid…)."""
+    v = (v or "").strip().lower()
+    if not v or v in ("-", "?", "x", "n/a", "plan", "free", "unpaid", "-ve", "na"):
+        return False
+    # 'plan (05/21/2026)' / 'free (07/08/2026)' are scheduled, not done.
+    if v.startswith("plan") or v.startswith("free"):
+        return False
+    return bool(re.search(r"\d", v))
+
+
 def analyze_measurements(rows):
     """Count measurements per calendar month from the measurements master log.
-    Primary basis = 'Measurement Date' (the actual site visit); 'Date Payed For
-    Measurement' is kept as a secondary series. Columns are located by header name
-    (the block header repeats down the sheet), data rows are '<index>, <name>, …'."""
-    out = {"monthly": {}, "monthly_paid": {}, "total": 0, "total_paid": 0,
-           "source": "measurement_date"}
+
+    The sheet is organised in numbered MONTHLY blocks (index column restarts at 1
+    each month) — the dates inside are hand-entered in inconsistent formats, so we
+    do NOT parse them for the month. Instead we assign each block a month by walking
+    forward from the first block: an explicit 'Mon YYYY' header snaps the current
+    month (and self-corrects drift — verified: the 17th block == the sheet's own
+    'May 2026' header), and every index-reset advances one month.
+
+    Exposes three monthly series so the definition can be chosen downstream:
+      monthly          — clients logged that month (rows in the block)
+      monthly_measured — rows with a real 'Measurement Date' filled
+      monthly_paid     — rows with a real 'Date Payed For Measurement' filled
+    """
+    out = {"monthly": {}, "monthly_measured": {}, "monthly_paid": {},
+           "total": 0, "source": "monthly_block"}
     if not rows:
         return out
     meas_i = paid_i = None
+    cur = None
     for r in rows:
+        c0 = (r[0].strip() if r and r[0] else "")
         c1 = (r[1].strip() if len(r) > 1 and r[1] else "")
-        if c1 == "Name":                       # a block header row → (re)learn columns
+        if c0 in _MONI and re.fullmatch(r"20\d\d", c1 or ""):     # explicit month header
+            cur = f"{c1}-{_MONI[c0]:02d}"
+            continue
+        if c1 == "Name":                                          # block column header
             for i, h in enumerate(r):
                 hl = (h or "").strip().lower()
                 if hl == "measurement date":
@@ -823,19 +859,18 @@ def analyze_measurements(rows):
                 elif hl == "date payed for measurement":
                     paid_i = i
             continue
-        c0 = (r[0].strip() if r and r[0] else "")
-        if not (c0.isdigit() and c1):          # not a client data row
+        if not (c0.isdigit() and c1):                             # not a client data row
             continue
-        dm = _meas_date(r[meas_i]) if meas_i is not None and len(r) > meas_i else None
-        dp = _meas_date(r[paid_i]) if paid_i is not None and len(r) > paid_i else None
-        if dm:
-            ym = f"{dm:%Y-%m}"
-            out["monthly"][ym] = out["monthly"].get(ym, 0) + 1
-            out["total"] += 1
-        if dp:
-            ym = f"{dp:%Y-%m}"
-            out["monthly_paid"][ym] = out["monthly_paid"].get(ym, 0) + 1
-            out["total_paid"] += 1
+        if int(c0) == 1 and out["monthly"].get(cur):             # index reset → next month
+            cur = _next_ym(cur) if cur else "2025-01"
+        if cur is None:
+            cur = "2025-01"
+        out["monthly"][cur] = out["monthly"].get(cur, 0) + 1
+        out["total"] += 1
+        if meas_i is not None and len(r) > meas_i and _meas_has(r[meas_i]):
+            out["monthly_measured"][cur] = out["monthly_measured"].get(cur, 0) + 1
+        if paid_i is not None and len(r) > paid_i and _meas_has(r[paid_i]):
+            out["monthly_paid"][cur] = out["monthly_paid"].get(cur, 0) + 1
     return out
 
 
