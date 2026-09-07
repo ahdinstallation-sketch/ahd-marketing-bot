@@ -195,7 +195,8 @@ def build_context(meta, sheets):
     # ---- NEW simple overview: PAID / LEADS / MEASUREMENTS, MTD + month-by-month ----
     # Spend history comes from Meta (per-month), leads & measurements are counted
     # from the sales team's own leads sheet (leads_detail), bucketed by lead month.
-    lead_monthly = (al.get("monthly") or {})   # {ym: {leads, measurements}}
+    lead_monthly = (al.get("monthly") or {})            # {ym: {leads, measurements}}
+    meas_monthly = ((sheets.get("measurements") or {}).get("monthly") or {})  # {ym: count}
     spend_by_ym = {m.get("ym"): (m.get("spend") or 0)
                    for m in (meta.get("monthly_spend") or [])}
     today_o = cairo_now().date()
@@ -213,15 +214,16 @@ def build_context(meta, sheets):
             "ym": ym, "label": f"{fd:%b}",
             "spend": spend_by_ym.get(ym, 0) or 0,
             "leads": lm.get("leads", 0) or 0,
-            "measurements": lm.get("measurements", 0) or 0,
+            "measurements": meas_monthly.get(ym, 0) or 0,
         })
-    cur = lead_monthly.get(f"{today_o:%Y-%m}", {}) or {}
+    cur_ym = f"{today_o:%Y-%m}"
+    cur = lead_monthly.get(cur_ym, {}) or {}
     ctx["overview"] = {
         "months": months,
         "m_label": ctx["dates"]["m_label"],
         "spend_mtd": m_spend,
         "leads_mtd": cur.get("leads", 0) or 0,
-        "meas_mtd": cur.get("measurements", 0) or 0,
+        "meas_mtd": meas_monthly.get(cur_ym, 0) or 0,
         "has_spend": any(m["spend"] for m in months),
         "has_leads": bool(lead_monthly),
     }
@@ -443,9 +445,9 @@ def _overview_block(ctx):
         f'{leads_chart}'
         '<div style="font-weight:700;font-size:13px;margin:14px 0 3px;color:#1f7a53">📏 Measurements — month by month</div>'
         f'{meas_chart}'
-        '<div style="font-size:10px;color:#aaa;margin-top:10px">Leads &amp; measurements counted from the '
-        'sales leads sheet by lead month; measurements = leads that reached the paid-measurement stage. '
-        'Current month is still in progress.</div>'
+        '<div style="font-size:10px;color:#aaa;margin-top:10px">Leads counted from the sales leads sheet by lead month. '
+        'Measurements = site measurement visits from the measurements master sheet (by Measurement Date). '
+        'Spend from Meta. Current month is still in progress.</div>'
         '</div>')
 
 

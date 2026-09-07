@@ -13,6 +13,11 @@ SHEETS = {
     "designy_leads": "1VwE90ugoXTI4_90tKXzo7PT2TXpXYxyci0Ml3g9rrqs",
     "outdoor_leads": "1dcpQoXDntz7qfL2rMPOQ8Ba2xfLDwVxg6Tr-vT4H3BI",
     "ahd_tracker":   "1DuEomzuYrvveXzvwg4hbj0tsGBQpjRk6iUpbOFm2FvQ",
+    # The measurements / sales master log (monthly blocks; one row per client with
+    # a "Measurement Date" and "Date Payed For Measurement"). Ahmed's real source
+    # for "how many measurements" — the leads-sheet paid-measurement stage barely
+    # gets filled in, this sheet is where the technical team logs actual visits.
+    "measurements":  "15YXu-lZXoe9UeN7o-Ao0NWiwWXnxe5Z9lprokIRXcCg",
 }
 TRACKER_GID = "57990844"
 # The AHD Facebook Lead-Ads feed (same workbook as outdoor_leads, specific tab).
@@ -769,10 +774,76 @@ def correlate_leads_tracker(leads_detail, clients_detail):
     return out
 
 
+def _meas_date(s):
+    """Tolerant date parser for the measurements master (mixes dd/mm/yyyy like
+    '22/01/2025' and m/d/yyyy like '4/16/2025'). Returns a date or None."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    s = s.split()[0]
+    m = re.match(r"(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})$", s)
+    if not m:
+        return None
+    a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if a > 31:                       # yyyy/mm/dd
+        y, mo, d = a, b, c
+    else:
+        y = c
+        if a > 12 and b <= 12:       # dd/mm/yyyy
+            d, mo = a, b
+        elif b > 12 and a <= 12:     # m/d/yyyy
+            mo, d = a, b
+        else:                        # ambiguous → assume dd/mm (Egyptian sheets)
+            d, mo = a, b
+    if y < 100:
+        y += 2000
+    try:
+        return datetime.date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def analyze_measurements(rows):
+    """Count measurements per calendar month from the measurements master log.
+    Primary basis = 'Measurement Date' (the actual site visit); 'Date Payed For
+    Measurement' is kept as a secondary series. Columns are located by header name
+    (the block header repeats down the sheet), data rows are '<index>, <name>, …'."""
+    out = {"monthly": {}, "monthly_paid": {}, "total": 0, "total_paid": 0,
+           "source": "measurement_date"}
+    if not rows:
+        return out
+    meas_i = paid_i = None
+    for r in rows:
+        c1 = (r[1].strip() if len(r) > 1 and r[1] else "")
+        if c1 == "Name":                       # a block header row → (re)learn columns
+            for i, h in enumerate(r):
+                hl = (h or "").strip().lower()
+                if hl == "measurement date":
+                    meas_i = i
+                elif hl == "date payed for measurement":
+                    paid_i = i
+            continue
+        c0 = (r[0].strip() if r and r[0] else "")
+        if not (c0.isdigit() and c1):          # not a client data row
+            continue
+        dm = _meas_date(r[meas_i]) if meas_i is not None and len(r) > meas_i else None
+        dp = _meas_date(r[paid_i]) if paid_i is not None and len(r) > paid_i else None
+        if dm:
+            ym = f"{dm:%Y-%m}"
+            out["monthly"][ym] = out["monthly"].get(ym, 0) + 1
+            out["total"] += 1
+        if dp:
+            ym = f"{dp:%Y-%m}"
+            out["monthly_paid"][ym] = out["monthly_paid"].get(ym, 0) + 1
+            out["total_paid"] += 1
+    return out
+
+
 def pull_sheets():
     snap = {"pulled_at": datetime.datetime.now().isoformat(timespec="seconds")}
     snap["designy_leads"] = analyze_leads(fetch(SHEETS["designy_leads"]))
     snap["outdoor_leads"] = analyze_leads(fetch(SHEETS["outdoor_leads"]))
+    snap["measurements"] = analyze_measurements(fetch(SHEETS["measurements"]))
     # Same workbook, the Facebook Lead-Ads tab — parsed positionally + brand-scored.
     snap["ahd_leads"] = analyze_ahd_leads(fetch(SHEETS["outdoor_leads"], AHD_LEADS_GID))
     # Default sheet matches the tracker tab the prior session validated (header on row 2).
