@@ -83,6 +83,15 @@ def _clean_name(s):
 _EXCLUDE_STATUS = {"OVER BUDGET", "NO ANSWER AFTER OFFER"}
 
 
+def _is_won(rec):
+    """True once a deal is signed / in production — CONTRACTED or ORDER (or a
+    SIGNED CONTRACT status). Sales must NOT follow up with these, so they are kept
+    out of BOTH the chase list and the 'this month' summary (Ahmed, 8 Sep 2026)."""
+    stage = (rec.get("stage") or "").upper()
+    status = (rec.get("status") or "").upper()
+    return stage in ("CONTRACTED", "ORDER") or status == "SIGNED CONTRACT"
+
+
 def _bucket(rec):
     """Return (key, label, why) for a client, or None if won / excluded."""
     stage = (rec.get("stage") or "").upper()
@@ -208,6 +217,8 @@ def this_month(t):
         ds = rec.get("date")
         if not ds:
             continue
+        if _is_won(rec):
+            continue  # contracted / in production — not a follow-up target
         try:
             d = datetime.date.fromisoformat(ds)
         except (TypeError, ValueError):
