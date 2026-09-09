@@ -216,9 +216,17 @@ def this_month(t):
     OFFER like Mohamed Nasr) is included too — otherwise it never surfaces here.
     Won/contracted clients are excluded."""
     now = cairo_now()
-    cur = (now.year, now.month)
-    py, pm = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
-    prior = (py, pm)
+
+    def _ym_back(k):
+        y, mo = now.year, now.month - k
+        while mo <= 0:
+            mo += 12
+            y -= 1
+        return (y, mo)
+
+    # "Past couple months" = current + the two prior months (Ahmed, 9 Sep 2026).
+    window = {_ym_back(0), _ym_back(1), _ym_back(2)}
+    oldest = _ym_back(2)
 
     # An undated deal has no date column filled, so we can't know its month directly.
     # But the tracker is APPEND-ORDERED (clients are added top→bottom as they come in),
@@ -234,14 +242,14 @@ def this_month(t):
         except (TypeError, ValueError):
             return None
 
-    anchor = None
+    # Anchor undated clients to the recent tail: the region AFTER the last client whose
+    # rolled-up date is OLDER than the window. Undated clients below that boundary were
+    # added recently; older undated deals above it stay out (they're in the chase list).
+    anchor = 0
     for i, rec in enumerate(detail):
         d = _pd(rec.get("date"))
-        if d is not None and (d.year, d.month) in (cur, prior):
-            anchor = i
-            break
-    if anchor is None:                       # no dated recent client to anchor on
-        anchor = max(0, len(detail) - 8)     # fall back to the recent tail of the sheet
+        if d is not None and (d.year, d.month) < oldest:
+            anchor = i + 1
 
     rows = []
     for i, rec in enumerate(detail):
@@ -249,10 +257,10 @@ def this_month(t):
             continue  # contracted / in production — not a follow-up target
         amt = rec.get("amount_num") or 0
         d = _pd(rec.get("date"))
-        in_window = d is not None and (d.year, d.month) in (cur, prior)
+        in_window = d is not None and (d.year, d.month) in window
         undated_recent = d is None and amt > 0 and i >= anchor  # added in the recent tail
         if not (in_window or undated_recent):
-            continue  # older than last month, or an old undated deal → not here
+            continue  # older than the window, or an old undated deal → not here
         rows.append({
             "client": _clean_name(rec.get("client")),
             "rep": _clean_name(rec.get("rep")),
@@ -266,7 +274,7 @@ def this_month(t):
     rows.sort(key=lambda r: (r["amount"] or 0, r["date"] or datetime.date.min),
               reverse=True)
     return {"rows": rows, "value": sum(r["amount"] or 0 for r in rows),
-            "label": f"{datetime.date(py, pm, 1):%b} + {now:%b %Y}",
+            "label": f"{datetime.date(oldest[0], oldest[1], 1):%b}–{now:%b %Y}",
             "count": len(rows)}
 
 

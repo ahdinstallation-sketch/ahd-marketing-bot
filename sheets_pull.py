@@ -178,6 +178,11 @@ _ROOM_HEADS = (
     # (they broke the roll-up and showed up as phantom standalone "clients").
     "corian", "marble", "granite", "quartz", "countertop", "counter top", "island",
     "entrance", "intrance", "outdoor", "terrace", "garden", "balcony", "roof",
+    # More line-item / room names seen leaking as fake clients (Ahmed, 9 Sep 2026).
+    "coffee", "corner", "designy", "furniture", "foyer", "staircase", "stairs",
+    "facade", "façade", "landing", "cladding", "guest room", "guest dressing",
+    # common misspellings seen in the sheet
+    "drssing", "dresing", "bedrom", "kitchn", "recption", "kitchenete",
     "مطبخ", "دريسنج", "غرفة", "دولاب", "ريسبشن", "ريسيبشن", "حمام",
 )
 
@@ -213,6 +218,12 @@ def analyze_tracker(rows):
         "SESSION", "OFFER", "INITIAL PRESENTATION",
         "FINAL PRESENTATION AFTER CLIENT COMMENTS", "CONTRACTED", "ORDER")) if i is not None]
     _amt_cols = [i for i in (idx("Amount"), idx("Amount in EGP")) if i is not None]
+    # Date columns live on the ROOM rows as often as the parent (e.g. a client's session
+    # date is logged on the "Kitchen" child, not the person row). Roll the LATEST child
+    # date up into the parent so the client isn't treated as undated (Ahmed, 9 Sep 2026).
+    _date_cols = [i for i in (idx(n) for n in
+                  ("SESSION DATE", "OFFER DATE", "Call Date", "CONTRACT DATE"))
+                  if i is not None]
 
     def _amt(x):
         return num(x) if x and str(x).strip() else 0.0
@@ -227,6 +238,16 @@ def analyze_tracker(rows):
                     while len(cur) <= i:
                         cur.append("")
                     cur[i] = "TRUE"
+            # roll the latest child date up into the parent (per date column)
+            for i in _date_cols:
+                cv = r[i].strip() if len(r) > i and r[i] else ""
+                cd = _tracker_date(cv) if cv else None
+                if cd:
+                    pd = _tracker_date(cur[i]) if len(cur) > i and cur[i] else None
+                    if pd is None or cd > pd:
+                        while len(cur) <= i:
+                            cur.append("")
+                        cur[i] = cv
             # parent Amount is the group total in practice; only fill from children if the
             # parent had no amount (then accumulate).
             for i in _amt_cols:
