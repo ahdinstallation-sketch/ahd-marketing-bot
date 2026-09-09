@@ -219,22 +219,40 @@ def this_month(t):
     cur = (now.year, now.month)
     py, pm = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
     prior = (py, pm)
+
+    # An undated deal has no date column filled, so we can't know its month directly.
+    # But the tracker is APPEND-ORDERED (clients are added top→bottom as they come in),
+    # so a client's row position tells us roughly when it was added. Anchor = the row
+    # where this-month/last-month activity starts; undated clients AT or BELOW it were
+    # added recently, so we keep them; older undated deals (added months ago, still
+    # open, no date) stay out of this list — they're covered by the chase list below.
+    detail = t.get("clients_detail", [])
+
+    def _pd(ds):
+        try:
+            return datetime.date.fromisoformat(ds) if ds else None
+        except (TypeError, ValueError):
+            return None
+
+    anchor = None
+    for i, rec in enumerate(detail):
+        d = _pd(rec.get("date"))
+        if d is not None and (d.year, d.month) in (cur, prior):
+            anchor = i
+            break
+    if anchor is None:                       # no dated recent client to anchor on
+        anchor = max(0, len(detail) - 8)     # fall back to the recent tail of the sheet
+
     rows = []
-    for rec in t.get("clients_detail", []):
+    for i, rec in enumerate(detail):
         if _is_won(rec):
             continue  # contracted / in production — not a follow-up target
         amt = rec.get("amount_num") or 0
-        ds = rec.get("date")
-        d = None
-        if ds:
-            try:
-                d = datetime.date.fromisoformat(ds)
-            except (TypeError, ValueError):
-                d = None
+        d = _pd(rec.get("date"))
         in_window = d is not None and (d.year, d.month) in (cur, prior)
-        undated_active = d is None and amt > 0
-        if not (in_window or undated_active):
-            continue  # older than last month, or undated with no value → not here
+        undated_recent = d is None and amt > 0 and i >= anchor  # added in the recent tail
+        if not (in_window or undated_recent):
+            continue  # older than last month, or an old undated deal → not here
         rows.append({
             "client": _clean_name(rec.get("client")),
             "rep": _clean_name(rec.get("rep")),
