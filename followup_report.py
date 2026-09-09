@@ -208,40 +208,48 @@ def build(t):
 # ---------- this-month builder ----------
 
 def this_month(t):
-    """Clients whose latest tracked activity falls in the current Cairo month —
-    a quick 'who came in this month' list at the top of the email."""
+    """Relevant follow-ups for the top of the email. Kept to the CURRENT + PRIOR
+    Cairo month so it stays about who to chase now (Ahmed, 9 Sep 2026 — the old
+    version showed the current month only and, when that was empty, padded with the
+    6 most recent regardless of age, so stale clients appeared). Because the team's
+    date columns lag badly, an open deal that has a VALUE but no date yet (e.g. a live
+    OFFER like Mohamed Nasr) is included too — otherwise it never surfaces here.
+    Won/contracted clients are excluded."""
     now = cairo_now()
-    ym = (now.year, now.month)
-    all_dated = []
+    cur = (now.year, now.month)
+    py, pm = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    prior = (py, pm)
+    rows = []
     for rec in t.get("clients_detail", []):
-        ds = rec.get("date")
-        if not ds:
-            continue
         if _is_won(rec):
             continue  # contracted / in production — not a follow-up target
-        try:
-            d = datetime.date.fromisoformat(ds)
-        except (TypeError, ValueError):
-            continue
-        all_dated.append({
+        amt = rec.get("amount_num") or 0
+        ds = rec.get("date")
+        d = None
+        if ds:
+            try:
+                d = datetime.date.fromisoformat(ds)
+            except (TypeError, ValueError):
+                d = None
+        in_window = d is not None and (d.year, d.month) in (cur, prior)
+        undated_active = d is None and amt > 0
+        if not (in_window or undated_active):
+            continue  # older than last month, or undated with no value → not here
+        rows.append({
             "client": _clean_name(rec.get("client")),
             "rep": _clean_name(rec.get("rep")),
-            "amount": rec.get("amount_num") or 0,
+            "amount": amt,
             "usd": bool(rec.get("amount_usd_converted")),
             "stage": (rec.get("stage") or "").title() or "—",
             "status": _clean_name(rec.get("status")),
-            "date": d,
+            "date": d,  # may be None (undated but active)
         })
-    all_dated.sort(key=lambda r: (r["date"], r["amount"] or 0), reverse=True)
-    rows = [r for r in all_dated if (r["date"].year, r["date"].month) == ym]
-    # The team's date columns lag, so the current month can legitimately be empty
-    # early on. Rather than show a dead section, fall back to the 6 most recently
-    # dated clients (clearly flagged) so there's always something actionable.
-    fallback = not rows
-    shown = rows if rows else all_dated[:6]
-    return {"rows": shown, "value": sum(r["amount"] or 0 for r in shown),
-            "label": f"{now:%B %Y}", "fallback": fallback,
-            "month_count": len(rows)}
+    # Biggest first (most valuable follow-ups on top); dated ties broken by recency.
+    rows.sort(key=lambda r: (r["amount"] or 0, r["date"] or datetime.date.min),
+              reverse=True)
+    return {"rows": rows, "value": sum(r["amount"] or 0 for r in rows),
+            "label": f"{datetime.date(py, pm, 1):%b} + {now:%b %Y}",
+            "count": len(rows)}
 
 
 # ---------- render ----------
@@ -335,23 +343,22 @@ def _missing(b):
 
 
 def _month_list(m):
-    """Compact list of clients seen this month, biggest/most-recent first."""
+    """Compact list of this-month + last-month follow-ups (plus undated active
+    deals), biggest first."""
     rows = m.get("rows", [])
     if not rows:
-        return '<div class="note">No clients logged with a date in this month yet.</div>'
-    note = ""
-    if m.get("fallback"):
-        note = (f'<div class="hv-hint">No clients dated in {esc(m.get("label",""))} yet '
-                f'(the tracker\'s date columns lag) — showing the most recent instead.</div>')
+        return '<div class="note">No active follow-ups this month or last month.</div>'
     body = ""
     for i, c in enumerate(rows, 1):
         amt = fmt(c["amount"]) if c["amount"] else "—"
         extra = f' · {esc(c["status"])}' if c.get("status") else ""
-        body += (f'<tr><td><b>{i}.</b> {esc(c["client"]) or "—"}'
-                 f'<span style="color:#9a9a9a;font-size:10px"> · {esc(c["date"].strftime("%d %b"))}</span></td>'
+        d = c.get("date")
+        datestr = (f'<span style="color:#9a9a9a;font-size:10px"> · {esc(d.strftime("%d %b"))}</span>'
+                   if d else ' <span style="color:#b06a12;font-size:9.5px">· add date</span>')
+        body += (f'<tr><td><b>{i}.</b> {esc(c["client"]) or "—"}{datestr}</td>'
                  f'<td style="color:#8a7a52">{esc(c["stage"])}{extra}</td>'
                  f'<td><b>{amt}</b>{_usd_tag(c.get("usd"))}</td></tr>')
-    return (note + f'<table class="chase"><thead><tr><th>Client</th><th>Stage</th>'
+    return (f'<table class="chase"><thead><tr><th>Client</th><th>Stage</th>'
             f'<th>Amount (EGP)</th></tr></thead><tbody>{body}</tbody></table>')
 
 
@@ -388,7 +395,7 @@ def render(t, b, m=None):
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0">🗓️ Clients this month <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— {esc((m or {}).get('label',''))} · {(m or {}).get('month_count',0)} clients · {fmt((m or {}).get('value',0))} EGP</span></h3>
+    <h3 style="margin-top:0">🗓️ Follow-ups — this month + last month <span style="font-size:10.5px;color:#9a9a9a;font-weight:400">— {esc((m or {}).get('label',''))} · {(m or {}).get('count',0)} clients · {fmt((m or {}).get('value',0))} EGP · incl. active deals with no date yet</span></h3>
     {_month_list(m or {})}
   </div>
 
@@ -441,7 +448,7 @@ def main():
     print(f"Wrote {out}")
     print(json.dumps({"open_count": b["open_count"], "open_value": round(b["open_value"]),
                       "won_orders": b["won_orders"],
-                      "this_month": m["month_count"],
+                      "this_month": m["count"],
                       "buckets": [(x["key"], x["count"], round(x["value"])) for x in b["buckets"]]},
                      ensure_ascii=False, indent=1))
 
