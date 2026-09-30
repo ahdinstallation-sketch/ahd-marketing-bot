@@ -30,10 +30,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Google Apps Script bound to the tracker sheet (see handover_apps_script.gs). This
 # follow-up email keeps only the daily pipeline + the "clients this month" list.
 
+# Company addresses only. The real list lives in the repo secret (RECIPIENTS /
+# CASH_RECIPIENTS / FOLLOWUP_RECIPIENTS), which is set and always wins; personal
+# addresses were removed from code when the repo went public on 30 Sep 2026.
 DEFAULT_RECIPIENTS = [
     "ahmed.helmy@amrhelmydesigns.com",     # Ahmed (me)
     "ahdh@amrhelmydesigns.com",            # Ezz (AHDH)
-    "helmymalak@gmail.com",                # Malak Helmy
     "orders@amrhelmydesigns.com",          # Orders
     "crm@amrhelmydesigns.com",             # CRM
     "mohamed.fahmy@amrhelmydesigns.com",   # Mohamed Fahmy

@@ -31,10 +31,11 @@ from meta_pull import pull_meta
 from sheets_pull import pull_sheets
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Company addresses only. The real list lives in the repo secret (RECIPIENTS /
+# CASH_RECIPIENTS / FOLLOWUP_RECIPIENTS), which is set and always wins; personal
+# addresses were removed from code when the repo went public on 30 Sep 2026.
 DEFAULT_RECIPIENTS = [
     "ahmed.helmy@amrhelmydesigns.com",
-    "helmymalak@gmail.com",
-    "nourannoor4@gmail.com",
 ]
 SEND_HOUR_CAIRO = 9
 # GitHub's free cron scheduler is best-effort and can fire hours late, so we accept

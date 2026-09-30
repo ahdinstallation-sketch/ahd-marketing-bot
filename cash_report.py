@@ -34,9 +34,11 @@ CASH_SHEET_ID = os.environ.get("CASH_SHEET_ID", "").strip() or \
     "1_2HtZU0PzQ8b1ZPPg-4-kChAMC72E_DOD8495X8uHyM"
 
 # Default recipients for the cash-position report (override with CASH_RECIPIENTS).
+# Company addresses only. The real list lives in the repo secret (RECIPIENTS /
+# CASH_RECIPIENTS / FOLLOWUP_RECIPIENTS), which is set and always wins; personal
+# addresses were removed from code when the repo went public on 30 Sep 2026.
 DEFAULT_RECIPIENTS = [
     "ahmed.helmy@amrhelmydesigns.com",   # Ahmed Amr Helmy
-    "helmymalak@gmail.com",              # Malak Helmy
     # Mohamed Fahmy, Mohamed Abdelrahman, Hisham — add their addresses here /
     # via the CASH_RECIPIENTS secret before enabling the cron.
 ]
