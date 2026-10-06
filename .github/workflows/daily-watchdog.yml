@@ -66,6 +66,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
           CASH_RECIPIENTS: ${{ secrets.CASH_RECIPIENTS }}
+          CASH_ALTDAY_RECIPIENTS: ${{ secrets.CASH_ALTDAY_RECIPIENTS }}
           FOLLOWUP_RECIPIENTS: ${{ secrets.FOLLOWUP_RECIPIENTS }}
           ALERT_RECIPIENTS: ${{ secrets.ALERT_RECIPIENTS }}
           CASH_SHEET_ID: ${{ secrets.CASH_SHEET_ID }}

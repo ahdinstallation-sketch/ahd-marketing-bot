@@ -49,6 +49,25 @@ SEND_HOUR_CAIRO = 8
 SEND_WINDOW_END_CAIRO = 23
 SENT_MARKER = os.environ.get("CASH_SENT_MARKER") or os.path.join(HERE, ".cash_sent_marker")
 
+# Every-other-working-day recipients (Ahmed, 6 Oct 2026: Mohamed Fahmy gets the cash position "one day
+# yes, one day no", Sun–Thu only). Addresses come from the CASH_ALTDAY_RECIPIENTS secret, never from code.
+# Working days are Sun–Thu (Egypt); Tue 6 Oct 2026 is a "yes" day, then they alternate.
+ALT_ANCHOR = datetime.date(2026, 10, 6)
+WEEKEND = (4, 5)  # Fri, Sat (Mon=0)
+
+
+def alt_day_on(d):
+    """True on every other Sun–Thu working day counted from ALT_ANCHOR; never on Fri/Sat."""
+    if d.weekday() in WEEKEND:
+        return False
+    step = 1 if d >= ALT_ANCHOR else -1
+    n, x = 0, ALT_ANCHOR
+    while x != d:
+        x += datetime.timedelta(days=step)
+        if x.weekday() not in WEEKEND:
+            n += 1
+    return n % 2 == 0
+
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -533,6 +552,12 @@ def main():
     force = "--force" in sys.argv
     recipients = [r.strip() for r in os.environ.get("CASH_RECIPIENTS", "").split(",") if r.strip()] \
         or DEFAULT_RECIPIENTS
+    alt = [r.strip() for r in os.environ.get("CASH_ALTDAY_RECIPIENTS", "").split(",") if r.strip()]
+    if alt:
+        on = alt_day_on(cairo_now().date())
+        low = {a.lower() for a in alt}
+        recipients = [r for r in recipients if r.lower() not in low] + (alt if on else [])
+        print(f"Every-other-day recipients ({len(alt)}): {'included' if on else 'left out'} today.")
 
     print("Pulling cash position…")
     d = pull_cash_position()

@@ -83,6 +83,14 @@ def main():
     if now.weekday() == 4:  # Friday — none of the reports send, nothing to rescue
         print("Cairo day is Friday — no reports are due. Nothing to check.")
         return 0
+    # The watchdog is scheduled for ~20:11 Cairo, but GitHub sometimes starts it hours late. After
+    # midnight it would see the NEW Cairo day with no marker yet and force-send that day's reports
+    # in the middle of the night — then the normal morning run sent them again (double emails,
+    # 28 Sep – 6 Oct 2026). Before noon the day's reports are still due on their own schedule.
+    if now.hour < 12:
+        print(f"Cairo time is {now:%H:%M} — this is a late start of last evening's watchdog; "
+              "today's reports are not due yet. Nothing to do.")
+        return 0
 
     rescued, failed, ok = [], [], []
     for label, script, marker in REPORTS:

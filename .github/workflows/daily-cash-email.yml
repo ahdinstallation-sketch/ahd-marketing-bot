@@ -69,11 +69,14 @@ jobs:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           CASH_RECIPIENTS: ${{ inputs.recipients || secrets.CASH_RECIPIENTS }}
+          CASH_ALTDAY_RECIPIENTS: ${{ secrets.CASH_ALTDAY_RECIPIENTS }}
           CASH_SHEET_ID: ${{ secrets.CASH_SHEET_ID }}
         # Manual dispatch with force=true → send now (test). The external pinger
         # dispatches with force=false, so it (like the schedule) goes through the
         # script's 08:00–21:00 window + once-per-day dedupe — no duplicate sends.
         run: |
+          # a one-off recipients override (test send) must not pull in the every-other-day list
+          if [ -n "${{ inputs.recipients }}" ]; then export CASH_ALTDAY_RECIPIENTS=""; fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
             python cash_report.py --force
           else
