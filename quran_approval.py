@@ -348,7 +348,7 @@ def announce(M, dry_run: bool):
     Only uploads after QWMC_ANNOUNCE_AFTER (ISO date) count, so old test
     clips are never announced.
     """
-    after = os.environ.get("QWMC_ANNOUNCE_AFTER", "2026-10-08")
+    after = os.environ.get("QWMC_ANNOUNCE_AFTER", "2026-10-07T12:00")
     tok = yt_token()
     ch = yt("GET", "channels?part=contentDetails&mine=true", tok)["items"][0]
     up = ch["contentDetails"]["relatedPlaylists"]["uploads"]
