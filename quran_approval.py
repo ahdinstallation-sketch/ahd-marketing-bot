@@ -175,10 +175,49 @@ def request(video_id: str, title: str, notes: str):
     print("approval request sent for", video_id)
 
 
+def announce(M, dry_run: bool):
+    """Email Ahmed about every new PRIVATE upload that has not been announced.
+
+    The cloud renderer (quran-kids repo) cannot send mail, so this finds its
+    uploads on the channel instead. "Already announced" = a request carrying
+    that video's tag sits in the bot's Sent folder — no state file to rot.
+    Only uploads after QWMC_ANNOUNCE_AFTER (ISO date) count, so old test
+    clips are never announced.
+    """
+    after = os.environ.get("QWMC_ANNOUNCE_AFTER", "2026-10-08")
+    tok = yt_token()
+    ch = yt("GET", "channels?part=contentDetails&mine=true", tok)["items"][0]
+    up = ch["contentDetails"]["relatedPlaylists"]["uploads"]
+    items = yt("GET", f"playlistItems?part=contentDetails&maxResults=15&playlistId={up}",
+               tok).get("items", [])
+    ids = [i["contentDetails"]["videoId"] for i in items
+           if i["contentDetails"].get("videoPublishedAt", "9") >= after]
+    if not ids:
+        return
+    vids = yt("GET", "videos?part=status,snippet&id=" + ",".join(ids), tok).get("items", [])
+    M.select('"[Gmail]/Sent Mail"', readonly=True)
+    for v in vids:
+        if v["status"].get("privacyStatus") != "private":
+            continue
+        vid = v["id"]
+        typ, data = M.search(None, "SUBJECT", f'"{ref_for(vid)}"')
+        if typ == "OK" and data[0].split():
+            continue
+        title = v["snippet"]["title"]
+        print(f"announcing new private upload {vid}: {title}")
+        if not dry_run:
+            request(vid, title, "Rendered and uploaded automatically in the cloud.")
+    M.select("INBOX")
+
+
 def poll(dry_run: bool):
     allowed = approvers()
     M = imaplib.IMAP4_SSL("imap.gmail.com")
     M.login(env("MAIL_USER"), env("MAIL_PASSWORD"))
+    try:
+        announce(M, dry_run)
+    except Exception as e:                              # noqa: BLE001
+        print("announce failed:", e)
     M.select("INBOX")
     typ, data = M.search(None, "UNSEEN", "SUBJECT", f'"{TAG}"')
     ids = data[0].split() if typ == "OK" else []
