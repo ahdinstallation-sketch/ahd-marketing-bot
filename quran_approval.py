@@ -230,7 +230,7 @@ def report() -> str:
 
     # money spent — written by the daily-art routine into quran-kids/costs.jsonl
     month = date.today().strftime("%Y-%m")
-    imgs = usd = 0.0
+    imgs = usd = credits = 0.0
     eps = set()
     try:
         repo = qk_repo()
@@ -244,11 +244,13 @@ def report() -> str:
                 if str(r.get("date", "")).startswith(month):
                     imgs += r.get("images", 0)
                     usd += float(r.get("usd", 0) or 0)
+                    credits += float(r.get("krea_credits", 0) or 0)
                     eps.add(r.get("surah"))
     except Exception as e:                              # noqa: BLE001
         lines.append(f"(cost log unavailable: {e})")
     lines += ["", f"Money spent this month ({month}):",
-              f"  Krea images: {int(imgs)} generated for {len(eps)} episode(s) = ${usd:.2f}",
+              f"  Krea images: {int(imgs)} generated for {len(eps)} episode(s), "
+              f"{int(credits)} Krea credits from your plan, extra cash ${usd:.2f}",
               "  GitHub (render + email bot): $0 - free tier",
               "  YouTube API / quran.com text + audio: $0",
               "  Claude (daily art + review): included in your Claude plan, $0 extra",
