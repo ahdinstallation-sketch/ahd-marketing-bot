@@ -219,12 +219,31 @@ def report() -> str:
                 lines.append(f"  {int(s2.get('viewCount', 0)):>7,} / {int(s2.get('likeCount', 0)):>4,} / "
                              f"{int(s2.get('commentCount', 0)):>3,}  {v['status']['privacyStatus']:<8} "
                              f"{v['snippet']['title'][:48]}")
+        from datetime import date as _d, timedelta as _td
+        end = _d.today().isoformat()
+        start = (_d.today() - _td(days=90)).isoformat()
+
+        def ya(metrics, extra=""):
+            q = (f"https://youtubeanalytics.googleapis.com/v2/reports?ids=channel%3D%3DMINE"
+                 f"&startDate={start}&endDate={end}&metrics={metrics}{extra}")
+            req = urllib.request.Request(q, headers={"Authorization": f"Bearer {tok}"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                rows = json.load(r).get("rows") or [[0]]
+            return rows[0][0]
+
+        try:
+            shorts90 = int(ya("views", "&filters=creatorContentType%3D%3DSHORTS"))
+            s90 = f"{shorts90:,} = {100*shorts90/YPP_SHORTS_VIEWS:.3f}% of 10M"
+        except Exception as e:                          # noqa: BLE001
+            s90 = f"unavailable ({str(e)[:60]})"
+        try:
+            rev = f"${float(ya('estimatedRevenue')):,.2f} (last 90 days)"
+        except Exception:                               # noqa: BLE001
+            rev = "$0 - channel not monetised yet (YouTube returns no revenue data)"
         lines += ["", "Monetisation:",
-                  f"  Not in the YouTube Partner Program yet. Ad revenue needs {YPP_SUBS:,} subscribers",
-                  f"  (now {subs:,} = {100*subs/YPP_SUBS:.1f}%) AND 10M Shorts views in 90 days",
-                  f"  (lifetime views so far {total:,} = {100*total/YPP_SHORTS_VIEWS:.3f}%).",
-                  "  Revenue to date: $0. (Exact 90-day Shorts views + revenue appear here once the",
-                  "  YouTube login is renewed with the Analytics permission.)"]
+                  f"  Subscribers: {subs:,} of {YPP_SUBS:,} needed ({100*subs/YPP_SUBS:.1f}%)",
+                  f"  Shorts views, last 90 days: {s90}",
+                  f"  Ad revenue: {rev}"]
     except Exception as e:                              # noqa: BLE001
         lines.append(f"(YouTube stats unavailable: {e})")
 
