@@ -54,6 +54,7 @@ jobs:
           QWMC_APPROVAL_KEY: ${{ secrets.QWMC_APPROVAL_KEY }}
           QWMC_APPROVERS: ${{ secrets.QWMC_APPROVERS }}
           QWMC_NOTIFY: ${{ secrets.QWMC_NOTIFY }}
+          QK_DEPLOY_KEY: ${{ secrets.QK_DEPLOY_KEY }}
           VIDEO_ID: ${{ inputs.video_id }}
           TITLE: ${{ inputs.title }}
           NOTES: ${{ inputs.notes }}

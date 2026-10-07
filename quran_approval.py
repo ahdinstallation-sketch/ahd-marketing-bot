@@ -101,6 +101,26 @@ def first_line(msg) -> str:
     return ""
 
 
+def reply_text(msg) -> str:
+    """Everything Ahmed typed, stopping at the quoted original."""
+    part = None
+    for p in (msg.walk() if msg.is_multipart() else [msg]):
+        if p.get_content_type() == "text/plain" and not p.get_filename():
+            part = p
+            break
+    if part is None:
+        return ""
+    raw = part.get_payload(decode=True) or b""
+    text = raw.decode(part.get_content_charset() or "utf-8", "replace")
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith(">") or re.match(r"^(On .+ wrote:|From:|-----|Sent from)", s):
+            break
+        out.append(line.rstrip())
+    return "\n".join(out).strip()[:4000]
+
+
 def verdict(line: str) -> str | None:
     words = re.findall(r"[\w']+", line)
     if not words:
@@ -116,6 +136,124 @@ def verdict(line: str) -> str | None:
 def authenticated(msg) -> bool:
     ar = " ".join(msg.get_all("Authentication-Results", []) or []).lower()
     return "dkim=pass" in ar or "dmarc=pass" in ar
+
+
+# ---------------------------------------------------------------- quran-kids repo
+QK = "/tmp/qk"
+
+
+def qk_repo() -> str | None:
+    """Shallow clone of the private quran-kids repo, via a deploy key scoped to
+    that one repo (secret QK_DEPLOY_KEY). Only costs.jsonl and amendments/ are
+    fetched. Returns the path, or None if the key is missing."""
+    import subprocess
+    key = os.environ.get("QK_DEPLOY_KEY", "")
+    if not key:
+        return None
+    if os.path.isdir(os.path.join(QK, ".git")):
+        return QK
+    kf = "/tmp/qk_key"
+    with open(kf, "w") as fh:
+        fh.write(key if key.endswith("\n") else key + "\n")
+    os.chmod(kf, 0o600)
+    os.environ["GIT_SSH_COMMAND"] = f"ssh -i {kf} -o StrictHostKeyChecking=accept-new"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", "--filter=blob:none", "--sparse",
+                    "git@github.com:ahdinstallation-sketch/quran-kids.git", QK], check=True)
+    subprocess.run(["git", "-C", QK, "sparse-checkout", "set", "--no-cone",
+                    "/costs.jsonl", "/published.json", "/amendments/"], check=True)
+    return QK
+
+
+def file_amendment(video_id: str, title: str, sender: str, text: str, dry_run: bool) -> bool:
+    import subprocess
+    from datetime import datetime, timezone
+    repo = qk_repo()
+    if not repo:
+        return False
+    d = os.path.join(repo, "amendments")
+    os.makedirs(d, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = os.path.join(d, f"{stamp}_{video_id}.md")
+    with open(path, "w") as fh:
+        fh.write(f"video_id: {video_id}\ntitle: {title}\nfrom: {sender}\n"
+                 f"received: {stamp}\nstatus: open\n---\n{text}\n")
+    if dry_run:
+        return True
+    g = ["git", "-C", repo]
+    subprocess.run(g + ["-c", "user.name=quran-approval-bot", "-c",
+                        "user.email=actions@users.noreply.github.com", "add", "amendments"], check=True)
+    subprocess.run(g + ["-c", "user.name=quran-approval-bot", "-c",
+                        "user.email=actions@users.noreply.github.com", "commit", "-q", "-m",
+                        f"amendment requested for {video_id}"], check=True)
+    for _ in range(3):
+        if subprocess.run(g + ["push", "-q", "origin", "HEAD:main"]).returncode == 0:
+            return True
+        subprocess.run(g + ["pull", "-q", "--rebase", "origin", "main"])
+    return False
+
+
+# ---------------------------------------------------------------- report
+YPP_SUBS, YPP_SHORTS_VIEWS = 1000, 10_000_000
+
+
+def report() -> str:
+    """Views + monetisation + money spent, appended to every approval email."""
+    from datetime import date
+    lines = ["", "=" * 46, "CHANNEL REPORT", "=" * 46]
+    try:
+        tok = yt_token()
+        ch = yt("GET", "channels?part=statistics,contentDetails&mine=true", tok)["items"][0]
+        st = ch["statistics"]
+        subs = int(st.get("subscriberCount", 0))
+        total = int(st.get("viewCount", 0))
+        lines += [f"Subscribers: {subs:,}    Total views: {total:,}    Videos: {st.get('videoCount')}"]
+        up = ch["contentDetails"]["relatedPlaylists"]["uploads"]
+        items = yt("GET", f"playlistItems?part=contentDetails&maxResults=10&playlistId={up}",
+                   tok).get("items", [])
+        ids = ",".join(i["contentDetails"]["videoId"] for i in items)
+        if ids:
+            vids = yt("GET", f"videos?part=snippet,statistics,status&id={ids}", tok).get("items", [])
+            lines += ["", "Latest videos (views / likes / comments, visibility):"]
+            for v in vids:
+                s2 = v.get("statistics", {})
+                lines.append(f"  {int(s2.get('viewCount', 0)):>7,} / {int(s2.get('likeCount', 0)):>4,} / "
+                             f"{int(s2.get('commentCount', 0)):>3,}  {v['status']['privacyStatus']:<8} "
+                             f"{v['snippet']['title'][:48]}")
+        lines += ["", "Monetisation:",
+                  f"  Not in the YouTube Partner Program yet. Ad revenue needs {YPP_SUBS:,} subscribers",
+                  f"  (now {subs:,} = {100*subs/YPP_SUBS:.1f}%) AND 10M Shorts views in 90 days",
+                  f"  (lifetime views so far {total:,} = {100*total/YPP_SHORTS_VIEWS:.3f}%).",
+                  "  Revenue to date: $0. (Exact 90-day Shorts views + revenue appear here once the",
+                  "  YouTube login is renewed with the Analytics permission.)"]
+    except Exception as e:                              # noqa: BLE001
+        lines.append(f"(YouTube stats unavailable: {e})")
+
+    # money spent — written by the daily-art routine into quran-kids/costs.jsonl
+    month = date.today().strftime("%Y-%m")
+    imgs = usd = 0.0
+    eps = set()
+    try:
+        repo = qk_repo()
+        p = os.path.join(repo, "costs.jsonl") if repo else ""
+        if p and os.path.exists(p):
+            for ln in open(p):
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if str(r.get("date", "")).startswith(month):
+                    imgs += r.get("images", 0)
+                    usd += float(r.get("usd", 0) or 0)
+                    eps.add(r.get("surah"))
+    except Exception as e:                              # noqa: BLE001
+        lines.append(f"(cost log unavailable: {e})")
+    lines += ["", f"Money spent this month ({month}):",
+              f"  Krea images: {int(imgs)} generated for {len(eps)} episode(s) = ${usd:.2f}",
+              "  GitHub (render + email bot): $0 - free tier",
+              "  YouTube API / quran.com text + audio: $0",
+              "  Claude (daily art + review): included in your Claude plan, $0 extra",
+              f"  TOTAL: ${usd:.2f}"]
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- youtube
@@ -169,7 +307,10 @@ def request(video_id: str, title: str, notes: str):
         "TO KEEP IT PRIVATE: reply  REJECT  (or just ignore this email)\n\n"
         "The bot checks for replies about every 30 minutes and will email you "
         "back when the video is public. Only replies from your own address are "
-        "accepted, and only to this email.\n")
+        "accepted, and only to this email.\n"
+        "TO ASK FOR CHANGES: reply with what to change (e.g. \"make the birds bigger\" or\n"
+        "\"redo the ayah 3 picture\"). A corrected version comes back to you for approval.\n")
+    body += report()
     subject = f"[Quran With My Child] Approve to publish: {title}  ({ref_for(video_id)})"
     send(env("QWMC_NOTIFY"), subject, body)
     print("approval request sent for", video_id)
@@ -259,8 +400,19 @@ def poll(dry_run: bool):
             reply = ("Got it — the video stays PRIVATE. Nothing was published.\n\n"
                      f"https://youtube.com/watch?v={vid}\n")
         else:
-            reply = ("I couldn't tell whether that was an approval, so nothing was "
-                     "published. Reply with just APPROVE or REJECT on the first line.\n")
+            text = reply_text(msg)
+            if len(text) < 3:
+                reply = ("That reply was empty, so nothing changed. Reply APPROVE, REJECT, "
+                         "or describe what to change.\n")
+            else:
+                title = re.sub(r"^.*Approve to publish:\s*", "", subject)
+                title = re.sub(r"\s*\(" + TAG + r".*$", "", title)
+                ok = file_amendment(vid, title, sender, text, dry_run)
+                reply = (("Got it - change request logged:\n\n" + text + "\n\nThe video stays "
+                          "PRIVATE. The cloud will apply it on its next daily run and send you a "
+                          "corrected version to approve.\n") if ok else
+                         ("I could not log that change request (repo access failed), so nothing "
+                          "changed and the video stays private. Please try again later.\n"))
         print("  ->", reply.splitlines()[0])
         if not dry_run:
             send(sender, "Re: " + re.sub(r"^(re:\s*)+", "", subject, flags=re.I),
