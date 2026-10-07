@@ -208,13 +208,15 @@ def report() -> str:
         total = int(st.get("viewCount", 0))
         lines += [f"Subscribers: {subs:,}    Total views: {total:,}    Videos: {st.get('videoCount')}"]
         up = ch["contentDetails"]["relatedPlaylists"]["uploads"]
-        items = yt("GET", f"playlistItems?part=contentDetails&maxResults=10&playlistId={up}",
+        items = yt("GET", f"playlistItems?part=contentDetails&maxResults=25&playlistId={up}",
                    tok).get("items", [])
         ids = ",".join(i["contentDetails"]["videoId"] for i in items)
         if ids:
             vids = yt("GET", f"videos?part=snippet,statistics,status&id={ids}", tok).get("items", [])
             lines += ["", "Latest videos (views / likes / comments, visibility):"]
             for v in vids:
+                if v["snippet"]["title"].startswith("LICENCE TEST"):
+                    continue                            # old reciter Content-ID probes
                 s2 = v.get("statistics", {})
                 lines.append(f"  {int(s2.get('viewCount', 0)):>7,} / {int(s2.get('likeCount', 0)):>4,} / "
                              f"{int(s2.get('commentCount', 0)):>3,}  {v['status']['privacyStatus']:<8} "
