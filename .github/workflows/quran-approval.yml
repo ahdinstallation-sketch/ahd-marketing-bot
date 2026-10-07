@@ -1,0 +1,67 @@
+name: Quran With My Child — publish on approval
+
+# Runs in the cloud so publishing works while Ahmed's Mac is closed.
+#   request: emails Ahmed the private link (dispatched by the Mac pipeline after upload)
+#   poll:    reads his replies; APPROVE -> video goes public, then emails him back
+# Nothing goes public without an authenticated APPROVE reply. See quran_approval.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "request = send approval email, poll = check replies"
+        type: choice
+        options: [poll, request]
+        default: poll
+      video_id:
+        description: "YouTube video id (request mode)"
+        type: string
+        default: ""
+      title:
+        description: "Episode title (request mode)"
+        type: string
+        default: ""
+      notes:
+        description: "Extra notes for the email body (request mode)"
+        type: string
+        default: ""
+      dry_run:
+        description: "poll mode: report only, publish nothing, mark nothing read"
+        type: boolean
+        default: false
+  schedule:
+    # Own minute lane (:23/:53) — no other workflow in this repo uses it.
+    - cron: "23,53 * * * *"
+
+concurrency:
+  group: quran-approval
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Approve / publish
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          QWMC_APPROVAL_KEY: ${{ secrets.QWMC_APPROVAL_KEY }}
+          QWMC_APPROVERS: ${{ secrets.QWMC_APPROVERS }}
+          QWMC_NOTIFY: ${{ secrets.QWMC_NOTIFY }}
+          VIDEO_ID: ${{ inputs.video_id }}
+          TITLE: ${{ inputs.title }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ "${{ inputs.mode }}" = "request" ]; then
+            python quran_approval.py request --video-id "$VIDEO_ID" --title "$TITLE" --notes "$NOTES"
+          elif [ "${{ inputs.dry_run }}" = "true" ]; then
+            python quran_approval.py poll --dry-run
+          else
+            python quran_approval.py poll
+          fi
