@@ -30,17 +30,22 @@ on:
         type: boolean
         default: false
   schedule:
-    # Own minute lane (:23/:53) — no other workflow in this repo uses it.
-    - cron: "23,53 * * * *"
+    # GitHub throttles frequent schedules hard — this asked for every 30 min
+    # and actually fired about every FOUR HOURS, so an APPROVE reply sat all
+    # morning. Long-running jobs are not throttled the same way, so instead of
+    # 48 fragile pings we start a watcher that polls inside one run for 5.5 h.
+    # Triggering hourly means any single surviving trigger restarts coverage;
+    # cancel-in-progress hands over to the newest one so they never stack.
+    - cron: "17 * * * *"
 
 concurrency:
   group: quran-approval
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,10 +64,15 @@ jobs:
           TITLE: ${{ inputs.title }}
           NOTES: ${{ inputs.notes }}
         run: |
-          if [ "${{ inputs.mode }}" = "request" ]; then
+          MODE="${{ inputs.mode }}"
+          if [ "$MODE" = "request" ]; then
             python quran_approval.py request --video-id "$VIDEO_ID" --title "$TITLE" --notes "$NOTES"
           elif [ "${{ inputs.dry_run }}" = "true" ]; then
             python quran_approval.py poll --dry-run
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            # scheduled: hold the run open and keep polling
+            python quran_approval.py watch --minutes 330 --every 120
           else
+            # manual dispatch: one pass, answer immediately
             python quran_approval.py poll
           fi

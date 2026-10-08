@@ -470,6 +470,37 @@ def poll(dry_run: bool):
     M.logout()
 
 
+def watch(minutes: int, every: int, dry_run: bool):
+    """Poll on a loop inside ONE Actions run.
+
+    GitHub throttles frequent schedules hard: this workflow asked for every
+    30 minutes and actually fired roughly every four hours, so an APPROVE
+    reply could sit most of a day. Long-running jobs are not throttled the
+    same way, so one surviving trigger now covers hours instead of a single
+    instant. A transient IMAP/SMTP blip must not end the watch — log it and
+    keep going.
+    """
+    import time
+    deadline = time.time() + minutes * 60
+    n, failures = 0, 0
+    while time.time() < deadline:
+        n += 1
+        try:
+            poll(dry_run)
+            failures = 0
+        except Exception as e:                          # noqa: BLE001
+            failures += 1
+            print(f"[watch] poll {n} failed ({failures} in a row): {e}", flush=True)
+            # Only give up if it is clearly not transient.
+            if failures >= 10:
+                raise
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(every, max(1, remaining)))
+    print(f"[watch] finished after {n} poll(s)", flush=True)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -479,8 +510,14 @@ if __name__ == "__main__":
     r.add_argument("--notes", default="")
     p = sub.add_parser("poll")
     p.add_argument("--dry-run", action="store_true")
+    w = sub.add_parser("watch")
+    w.add_argument("--minutes", type=int, default=330)
+    w.add_argument("--every", type=int, default=120)
+    w.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.mode == "request":
         request(a.video_id, a.title, a.notes)
+    elif a.mode == "watch":
+        watch(a.minutes, a.every, a.dry_run)
     else:
         poll(a.dry_run)
