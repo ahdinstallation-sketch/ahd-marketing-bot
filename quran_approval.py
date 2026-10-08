@@ -384,7 +384,7 @@ def announce(M, dry_run: bool):
         title = v["snippet"]["title"]
         print(f"announcing new private upload {vid}: {title}")
         if not dry_run:
-            request(vid, title, "Rendered and uploaded automatically in the cloud.")
+            request(vid, title, "Rendered and uploaded automatically by the pipeline.")
     M.select("INBOX")
 
 
