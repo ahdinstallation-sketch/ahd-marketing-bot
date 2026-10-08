@@ -178,6 +178,61 @@ def qk_repo() -> str | None:
     return QK
 
 
+def _qk_commit(repo: str, paths: list[str], msg: str) -> bool:
+    """Commit and push inside the quran-kids clone, rebasing on contention."""
+    import subprocess
+    ident = ["-c", "user.name=quran-approval-bot",
+             "-c", "user.email=actions@users.noreply.github.com"]
+    g = ["git", "-C", repo]
+    subprocess.run(g + ident + ["add"] + paths, check=True)
+    if subprocess.run(g + ["diff", "--cached", "--quiet"]).returncode == 0:
+        return True                                  # nothing changed
+    subprocess.run(g + ident + ["commit", "-q", "-m", msg], check=True)
+    for _ in range(3):
+        if subprocess.run(g + ["push", "-q", "origin", "HEAD:main"]).returncode == 0:
+            return True
+        subprocess.run(g + ["pull", "-q", "--rebase", "origin", "main"])
+    return False
+
+
+def mark_published(video_id: str, dry_run: bool) -> None:
+    """Record in the quran-kids ledger that this video is now public.
+
+    Without this the ledger keeps saying "private" forever: publishing changed
+    YouTube and nothing wrote back, so published.json disagreed with the
+    channel and anyone reading it got a wrong picture of what was live.
+    Best-effort — the video is already public by the time this runs, so a
+    failure here must never raise.
+    """
+    import json as _json
+    try:
+        repo = qk_repo()
+        if not repo:
+            return
+        lp = os.path.join(repo, "published.json")
+        if not os.path.exists(lp):
+            return
+        led = _json.load(open(lp))
+        hit = False
+        for e in led.get("published", []):
+            if e.get("video_id") == video_id and e.get("privacy") != "public":
+                e["privacy"] = "public"
+                hit = True
+        if not hit:
+            return
+        if dry_run:
+            print(f"DRY RUN: would mark {video_id} public in the ledger")
+            return
+        with open(lp, "w") as fh:
+            _json.dump(led, fh, indent=2)
+            fh.write("\n")
+        ok = _qk_commit(repo, ["published.json"], f"ledger: {video_id} is public")
+        print(f"ledger updated for {video_id}" if ok else
+              f"ledger update for {video_id} could not be pushed")
+    except Exception as e:                              # noqa: BLE001
+        print(f"ledger update for {video_id} failed (video is public regardless): {e}")
+
+
 def file_amendment(video_id: str, title: str, sender: str, text: str, dry_run: bool) -> bool:
     import subprocess
     from datetime import datetime, timezone
@@ -432,6 +487,10 @@ def poll(dry_run: bool):
                 result = make_public(vid, dry_run)
             except Exception as e:                      # noqa: BLE001
                 result = f"FAILED to publish ({e}). The video is still private."
+            else:
+                # Outside the try on purpose: the video is already public here,
+                # so nothing this does may ever report the publish as failed.
+                mark_published(vid, dry_run)
             reply = (f"{result}.\n\nhttps://youtube.com/watch?v={vid}\n")
         elif v == "reject":
             reply = ("Got it — the video stays PRIVATE. Nothing was published.\n\n"
