@@ -64,14 +64,28 @@ def approvers() -> set[str]:
 
 
 # ---------------------------------------------------------------- mail
+def _hdr(v: str) -> str:
+    """Flatten a header value onto one line.
+
+    A Message-ID pulled off an incoming mail can arrive folded across lines.
+    Assigning that straight into In-Reply-To raises
+    "Header values may not contain linefeed or carriage return characters" —
+    which crashed the poll AFTER it had already published the video, so the
+    run reported failure for an episode that had actually gone public.
+    """
+    return " ".join(str(v).split())
+
+
 def send(to: str, subject: str, body: str, in_reply_to: str | None = None):
     msg = EmailMessage()
     msg["From"] = f"Quran With My Child bot <{env('MAIL_USER')}>"
-    msg["To"] = to
-    msg["Subject"] = subject
+    msg["To"] = _hdr(to)
+    msg["Subject"] = _hdr(subject)
     if in_reply_to:
-        msg["In-Reply-To"] = in_reply_to
-        msg["References"] = in_reply_to
+        ref = _hdr(in_reply_to)
+        if ref:
+            msg["In-Reply-To"] = ref
+            msg["References"] = ref
     msg.set_content(body)
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60) as s:
         s.login(env("MAIL_USER"), env("MAIL_PASSWORD"))
@@ -438,9 +452,21 @@ def poll(dry_run: bool):
                           "changed and the video stays private. Please try again later.\n"))
         print("  ->", reply.splitlines()[0])
         if not dry_run:
-            send(sender, "Re: " + re.sub(r"^(re:\s*)+", "", subject, flags=re.I),
-                 reply, in_reply_to=mid)
-            M.store(num, "+FLAGS", "\\Seen")
+            # The video is already published by this point. A failure sending
+            # the courtesy confirmation must NOT fail the run — otherwise the
+            # workflow reports failure for an episode that actually went
+            # public, and Ahmed gets an alarming email about a success.
+            try:
+                send(sender, "Re: " + re.sub(r"^(re:\s*)+", "", subject, flags=re.I),
+                     reply, in_reply_to=mid)
+            except Exception as e:                      # noqa: BLE001
+                print(f"  (confirmation email failed, action already applied: {e})")
+            # Mark read regardless, so one bad reply cannot be reprocessed in a
+            # loop and re-publish or re-log on every poll.
+            try:
+                M.store(num, "+FLAGS", "\\Seen")
+            except Exception as e:                      # noqa: BLE001
+                print(f"  (could not flag as read: {e})")
     M.logout()
 
 
