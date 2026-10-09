@@ -2,16 +2,17 @@ name: Quran With My Child — publish on approval
 
 # Runs in the cloud so publishing works while Ahmed's Mac is closed.
 #   request: emails Ahmed the private link (dispatched by the Mac pipeline after upload)
-#   poll:    reads his replies; APPROVE -> video goes public, then emails him back
+#   poll:    one pass — announce new private uploads, read replies; APPROVE -> public
+#   watch:   the same, on a loop for 5.5 h inside one run
 # Nothing goes public without an authenticated APPROVE reply. See quran_approval.py.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "request = send approval email, poll = check replies"
+        description: "poll = one pass, watch = keep polling 5.5 h, request = send approval email"
         type: choice
-        options: [poll, request]
+        options: [poll, watch, request]
         default: poll
       video_id:
         description: "YouTube video id (request mode)"
@@ -36,6 +37,10 @@ on:
     # 48 fragile pings we start a watcher that polls inside one run for 5.5 h.
     # Triggering hourly means any single surviving trigger restarts coverage;
     # cancel-in-progress hands over to the newest one so they never stack.
+    #
+    # Even hourly, GitHub dropped most triggers (9 Oct: fired at 02:08 and
+    # 09:00 only). A Claude Routine therefore dispatches mode=watch on a fixed
+    # cadence as well; this schedule stays as a free second line of defence.
     - cron: "17 * * * *"
 
 concurrency:
@@ -69,8 +74,9 @@ jobs:
             python quran_approval.py request --video-id "$VIDEO_ID" --title "$TITLE" --notes "$NOTES"
           elif [ "${{ inputs.dry_run }}" = "true" ]; then
             python quran_approval.py poll --dry-run
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
-            # scheduled: hold the run open and keep polling
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "$MODE" = "watch" ]; then
+            # scheduled, or dispatched by the Claude Routine: hold the run open
+            # and keep polling
             python quran_approval.py watch --minutes 330 --every 120
           else
             # manual dispatch: one pass, answer immediately
