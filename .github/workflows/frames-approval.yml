@@ -1,9 +1,11 @@
-name: Quran, framed — publish on approval
+name: Ajaib — publish on approval
 
 # Second channel, same mechanism as quran-approval.yml: announce new PRIVATE
 # uploads to Ahmed by email, make a video public only on his authenticated
 # APPROVE reply. Separate token, tag, subject prefix and ledger so the two
 # channels never mix. Does nothing until YOUTUBE_TOKEN_JSON_FRAMES exists.
+# The channel was named AJAIB on 10 Oct (al-Qazwini's book of marvels);
+# it was called "Quran, framed" while it was still unnamed.
 
 on:
   workflow_dispatch:
@@ -43,8 +45,8 @@ jobs:
           QWMC_NOTIFY: ${{ secrets.QWMC_NOTIFY }}
           QK_DEPLOY_KEY: ${{ secrets.QK_DEPLOY_KEY }}
           QWMC_TAG: QF-REF
-          QWMC_BOT_NAME: "Quran, framed bot"
-          QWMC_SUBJECT_PREFIX: "[Quran, framed]"
+          QWMC_BOT_NAME: "Ajaib bot"
+          QWMC_SUBJECT_PREFIX: "[Ajaib]"
           QWMC_ANNOUNCE_AFTER: "2026-10-10T00:00"
           QK_LEDGER: frames/published.json
           QK_AMEND_DIR: frames/amendments
