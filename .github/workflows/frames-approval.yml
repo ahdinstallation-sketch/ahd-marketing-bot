@@ -1,0 +1,64 @@
+name: Quran, framed — publish on approval
+
+# Second channel, same mechanism as quran-approval.yml: announce new PRIVATE
+# uploads to Ahmed by email, make a video public only on his authenticated
+# APPROVE reply. Separate token, tag, subject prefix and ledger so the two
+# channels never mix. Does nothing until YOUTUBE_TOKEN_JSON_FRAMES exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "poll = one pass, watch = keep polling 5.5 h"
+        type: choice
+        options: [poll, watch]
+        default: poll
+      dry_run:
+        description: "report only, publish nothing, mark nothing read"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "47 * * * *"   # throttled by GitHub; the Claude Routine is the real driver
+
+concurrency:
+  group: quran-frames-approval
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Approve / publish (frames channel)
+        env:
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON_FRAMES }}
+          QWMC_APPROVAL_KEY: ${{ secrets.QWMC_APPROVAL_KEY }}
+          QWMC_APPROVERS: ${{ secrets.QWMC_APPROVERS }}
+          QWMC_NOTIFY: ${{ secrets.QWMC_NOTIFY }}
+          QK_DEPLOY_KEY: ${{ secrets.QK_DEPLOY_KEY }}
+          QWMC_TAG: QF-REF
+          QWMC_BOT_NAME: "Quran, framed bot"
+          QWMC_SUBJECT_PREFIX: "[Quran, framed]"
+          QWMC_ANNOUNCE_AFTER: "2026-10-10T00:00"
+          QK_LEDGER: frames/published.json
+          QK_AMEND_DIR: frames/amendments
+          QWMC_COSTS: frames/costs.jsonl
+        run: |
+          if [ -z "$YOUTUBE_TOKEN_JSON" ]; then
+            echo "YOUTUBE_TOKEN_JSON_FRAMES is not set yet - the frames channel is not configured. Nothing to do."
+            exit 0
+          fi
+          MODE="${{ inputs.mode }}"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python quran_approval.py poll --dry-run
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "$MODE" = "watch" ]; then
+            python quran_approval.py watch --minutes 330 --every 120
+          else
+            python quran_approval.py poll
+          fi
