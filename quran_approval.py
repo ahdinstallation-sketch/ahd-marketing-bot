@@ -20,6 +20,15 @@ A reply is acted on ONLY if all of these hold:
 
 stdlib only. Env: MAIL_USER, MAIL_PASSWORD, YOUTUBE_TOKEN_JSON,
 QWMC_APPROVAL_KEY, QWMC_APPROVERS, QWMC_NOTIFY.
+
+A second channel can share this script by setting (defaults in brackets):
+  QWMC_TAG            reference tag in subjects            [QWMC-REF]
+  QWMC_BOT_NAME       From display name                    [Quran With My Child bot]
+  QWMC_SUBJECT_PREFIX subject prefix                       [[Quran With My Child]]
+  QK_LEDGER           ledger path inside quran-kids        [published.json]
+  QK_AMEND_DIR        change-request folder in quran-kids  [amendments]
+  QWMC_COSTS          cost log in quran-kids               [costs.jsonl]
+The token (YOUTUBE_TOKEN_JSON) decides which channel is read and published.
 """
 from __future__ import annotations
 
@@ -39,8 +48,13 @@ import urllib.request
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 
-TAG = "QWMC-REF"
-REF_RE = re.compile(TAG + r":([A-Za-z0-9_-]{11})\.([0-9a-f]{12})")
+TAG = os.environ.get("QWMC_TAG", "QWMC-REF").strip() or "QWMC-REF"
+REF_RE = re.compile(re.escape(TAG) + r":([A-Za-z0-9_-]{11})\.([0-9a-f]{12})")
+BOT_NAME = os.environ.get("QWMC_BOT_NAME", "Quran With My Child bot").strip() or "Quran With My Child bot"
+SUBJECT_PREFIX = os.environ.get("QWMC_SUBJECT_PREFIX", "[Quran With My Child]").strip() or "[Quran With My Child]"
+QK_LEDGER = os.environ.get("QK_LEDGER", "published.json").strip() or "published.json"
+QK_AMEND_DIR = os.environ.get("QK_AMEND_DIR", "amendments").strip() or "amendments"
+QWMC_COSTS = os.environ.get("QWMC_COSTS", "costs.jsonl").strip() or "costs.jsonl"
 APPROVE = ("approve", "approved", "yes", "publish", "ok", "okay", "go",
            "موافق", "نعم", "انشر", "تمام")
 REJECT = ("reject", "rejected", "no", "don't", "dont", "stop", "لا", "ارفض")
@@ -78,7 +92,7 @@ def _hdr(v: str) -> str:
 
 def send(to: str, subject: str, body: str, in_reply_to: str | None = None):
     msg = EmailMessage()
-    msg["From"] = f"Quran With My Child bot <{env('MAIL_USER')}>"
+    msg["From"] = f"{BOT_NAME} <{env('MAIL_USER')}>"
     msg["To"] = _hdr(to)
     msg["Subject"] = _hdr(subject)
     if in_reply_to:
@@ -158,8 +172,9 @@ QK = "/tmp/qk"
 
 def qk_repo() -> str | None:
     """Shallow clone of the private quran-kids repo, via a deploy key scoped to
-    that one repo (secret QK_DEPLOY_KEY). Only costs.jsonl and amendments/ are
-    fetched. Returns the path, or None if the key is missing."""
+    that one repo (secret QK_DEPLOY_KEY). Only the ledgers, cost logs and
+    amendment folders of both channels are fetched. Returns the path, or None
+    if the key is missing."""
     import subprocess
     key = os.environ.get("QK_DEPLOY_KEY", "")
     if not key:
@@ -174,7 +189,8 @@ def qk_repo() -> str | None:
     subprocess.run(["git", "clone", "-q", "--depth", "1", "--filter=blob:none", "--sparse",
                     "git@github.com:ahdinstallation-sketch/quran-kids.git", QK], check=True)
     subprocess.run(["git", "-C", QK, "sparse-checkout", "set", "--no-cone",
-                    "/costs.jsonl", "/published.json", "/amendments/"], check=True)
+                    "/costs.jsonl", "/published.json", "/amendments/",
+                    "/frames/costs.jsonl", "/frames/published.json", "/frames/amendments/"], check=True)
     return QK
 
 
@@ -209,7 +225,7 @@ def mark_published(video_id: str, dry_run: bool) -> None:
         repo = qk_repo()
         if not repo:
             return
-        lp = os.path.join(repo, "published.json")
+        lp = os.path.join(repo, QK_LEDGER)
         if not os.path.exists(lp):
             return
         led = _json.load(open(lp))
@@ -226,7 +242,7 @@ def mark_published(video_id: str, dry_run: bool) -> None:
         with open(lp, "w") as fh:
             _json.dump(led, fh, indent=2)
             fh.write("\n")
-        ok = _qk_commit(repo, ["published.json"], f"ledger: {video_id} is public")
+        ok = _qk_commit(repo, [QK_LEDGER], f"ledger: {video_id} is public")
         print(f"ledger updated for {video_id}" if ok else
               f"ledger update for {video_id} could not be pushed")
     except Exception as e:                              # noqa: BLE001
@@ -239,7 +255,7 @@ def file_amendment(video_id: str, title: str, sender: str, text: str, dry_run: b
     repo = qk_repo()
     if not repo:
         return False
-    d = os.path.join(repo, "amendments")
+    d = os.path.join(repo, QK_AMEND_DIR)
     os.makedirs(d, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(d, f"{stamp}_{video_id}.md")
@@ -250,7 +266,7 @@ def file_amendment(video_id: str, title: str, sender: str, text: str, dry_run: b
         return True
     g = ["git", "-C", repo]
     subprocess.run(g + ["-c", "user.name=quran-approval-bot", "-c",
-                        "user.email=actions@users.noreply.github.com", "add", "amendments"], check=True)
+                        "user.email=actions@users.noreply.github.com", "add", QK_AMEND_DIR], check=True)
     subprocess.run(g + ["-c", "user.name=quran-approval-bot", "-c",
                         "user.email=actions@users.noreply.github.com", "commit", "-q", "-m",
                         f"amendment requested for {video_id}"], check=True)
@@ -324,7 +340,7 @@ def report() -> str:
     eps = set()
     try:
         repo = qk_repo()
-        p = os.path.join(repo, "costs.jsonl") if repo else ""
+        p = os.path.join(repo, QWMC_COSTS) if repo else ""
         if p and os.path.exists(p):
             for ln in open(p):
                 try:
@@ -403,7 +419,7 @@ def request(video_id: str, title: str, notes: str):
         "TO ASK FOR CHANGES: reply with what to change (e.g. \"make the birds bigger\" or\n"
         "\"redo the ayah 3 picture\"). A corrected version comes back to you for approval.\n")
     body += report()
-    subject = f"[Quran With My Child] Approve to publish: {title}  ({ref_for(video_id)})"
+    subject = f"{SUBJECT_PREFIX} Approve to publish: {title}  ({ref_for(video_id)})"
     send(env("QWMC_NOTIFY"), subject, body)
     print("approval request sent for", video_id)
 
@@ -502,7 +518,7 @@ def poll(dry_run: bool):
                          "or describe what to change.\n")
             else:
                 title = re.sub(r"^.*Approve to publish:\s*", "", subject)
-                title = re.sub(r"\s*\(" + TAG + r".*$", "", title)
+                title = re.sub(r"\s*\(" + re.escape(TAG) + r".*$", "", title)
                 ok = file_amendment(vid, title, sender, text, dry_run)
                 reply = (("Got it - change request logged:\n\n" + text + "\n\nThe video stays "
                           "PRIVATE. The cloud will apply it on its next daily run and send you a "
