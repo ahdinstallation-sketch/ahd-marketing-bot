@@ -16,3 +16,4 @@ print_followup.launchd.log
 __pycache__/
 *.pyc
 .DS_Store
+.cash_balances.json

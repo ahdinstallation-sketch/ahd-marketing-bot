@@ -24,7 +24,7 @@ Usage:
   python3 cash_report.py --force     # build + send now regardless of the hour
   python3 cash_report.py             # build + send (guarded to the morning window)
 """
-import os, sys, json, html, datetime
+import os, sys, json, html, datetime, hashlib
 
 from sheets_pull import fetch, num, _find_col
 from daily_report import cairo_now, send_email
@@ -67,6 +67,46 @@ def alt_day_on(d):
         if x.weekday() not in WEEKEND:
             n += 1
     return n % 2 == 0
+
+# Bank-balance freshness (Ahmed 25 Oct 2026: the 08:00 email showed Saturday's balances while Hisham told him today's — the email
+# read the sheet before Hisham's daily update). Every run (9 a day) records WHEN the balances last changed; the repo is public, so
+# only a fingerprint of the two totals + the date is kept (cache, never the amounts). The email warns when the balances have not
+# changed since before the previous working day.
+TRACK_FILE = os.environ.get("CASH_TRACK_FILE") or os.path.join(HERE, ".cash_balances.json")
+
+
+def _prev_workday(d):
+    d -= datetime.timedelta(days=1)
+    while d.weekday() in WEEKEND:
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def track_balances(d):
+    """Update the tracker; return {'since': ISO date or None, 'at_least': bool, 'stale': bool}."""
+    today = cairo_now().date()
+    if not d.get("ok"):
+        return {"since": None, "at_least": False, "stale": False}
+    h = hashlib.sha256(f"{round(d['bank_egp'])}|{round(d['bank_fx'])}".encode()).hexdigest()[:16]
+    try:
+        with open(TRACK_FILE, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        st = {}
+    if not st:
+        st = {"h": h, "changed_on": None, "first_seen": today.isoformat()}
+    elif st.get("h") != h:
+        st = {"h": h, "changed_on": today.isoformat(), "first_seen": st.get("first_seen") or today.isoformat()}
+    try:
+        with open(TRACK_FILE, "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
+    except OSError:
+        pass
+    since = st.get("changed_on") or st.get("first_seen")
+    at_least = not st.get("changed_on")
+    stale = bool(since) and datetime.date.fromisoformat(since) < _prev_workday(today)
+    return {"since": since, "at_least": at_least, "stale": stale}
+
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -363,6 +403,13 @@ def render(d):
                    f'showing the last closed month (<b>{esc(ml)}</b>). Updates automatically '
                    f'once {esc(cur_label)} collections land in the sheet.</div>')
 
+    fr = d.get("fresh") or {}
+    if fr.get("stale"):
+        sd = datetime.date.fromisoformat(fr["since"])
+        pending = (f'<div class="pending" style="color:#b3261e;background:#fdecea;border-color:#f3c2bd">⚠ <b>Bank balances have not '
+                   f'changed since {"at least " if fr.get("at_least") else ""}{sd:%A %d %b}</b> — they are probably not updated yet today. '
+                   f'Treat the bank figures below as of that day; the treasury sheet is updated during the working day.</div>') + pending
+
     # Hero KPIs
     hero = f"""
     <div class="kpis">
@@ -395,13 +442,21 @@ def render(d):
     else:
         bank_tbl = ""
 
+    avail = d['bank_fx'] - d['outstanding_checks']      # Ahmed 25 Oct 2026: what is really available once the cheques clear (e.g. rent)
+    last = ""
+    if fr.get("since"):
+        last = (f'<div class="note">Bank balances last changed: {"at least since " if fr.get("at_least") else ""}'
+                f'{datetime.date.fromisoformat(fr["since"]):%A %d %b}.</div>')
     bank_kpi = f"""
     <div class="kpis" style="margin-bottom:10px">
       <div class="kpi"><div class="lbl">Bank Balance (EGP)</div>
         <div class="val">{fmt(d['bank_egp'])}</div><div class="sm">EGP cash across banks</div></div>
       <div class="kpi"><div class="lbl">Bank incl. FX</div>
         <div class="val">{fmt(d['bank_fx'])}</div><div class="sm">EGP + foreign currency</div></div>
-    </div>"""
+      <div class="kpi"><div class="lbl">Available after uncleared cheques</div>
+        <div class="val {'neg' if avail < 0 else 'pos'}">{'−' if avail < 0 else ''}{fmt(abs(avail))}</div>
+        <div class="sm">incl. FX − {fmt(d['outstanding_checks'])} cheques not yet cleared (e.g. rent)</div></div>
+    </div>{last}"""
 
     # Debt & obligations
     dr = d.get("debt_to_rev") or "—"
@@ -561,6 +616,8 @@ def main():
 
     print("Pulling cash position…")
     d = pull_cash_position()
+    d["fresh"] = track_balances(d)
+    print("Bank balances last changed:", d["fresh"])
     html_body = render(d)
     out = os.path.join(HERE, "cash_report.html")
     with open(out, "w", encoding="utf-8") as fh:
@@ -572,6 +629,8 @@ def main():
                      ensure_ascii=False, indent=1))
 
     subject = f"AHD Cash Position — {cairo_now():%a %d %b}"
+    if d.get("fresh", {}).get("stale"):
+        subject = "⚠ " + subject + " — bank balances not updated"
     if dry:
         print("DRY RUN — not sending.")
         return 0
