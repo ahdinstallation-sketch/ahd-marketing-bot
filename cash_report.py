@@ -48,6 +48,10 @@ SEND_HOUR_CAIRO = 8
 # (dedupe keeps it once/day) rather than dropping a late fire and missing the day.
 SEND_WINDOW_END_CAIRO = 23
 SENT_MARKER = os.environ.get("CASH_SENT_MARKER") or os.path.join(HERE, ".cash_sent_marker")
+# 15:00 update (Ahmed 25 Oct 2026: "add the 15:00 cash email") — Sun–Thu, only when the bank balances changed after the 08:00 email,
+# main recipients only (the every-other-day list is left out: Fahmy asked for fewer emails).
+PM_HOUR_CAIRO = 15
+PM_MARKER = os.environ.get("CASH_PM_MARKER") or os.path.join(HERE, ".cash_pm_marker")
 
 # Every-other-working-day recipients (Ahmed, 6 Oct 2026: Mohamed Fahmy gets the cash position "one day
 # yes, one day no", Sun–Thu only). Addresses come from the CASH_ALTDAY_RECIPIENTS secret, never from code.
@@ -86,7 +90,7 @@ def track_balances(d):
     """Update the tracker; return {'since': ISO date or None, 'at_least': bool, 'stale': bool}."""
     today = cairo_now().date()
     if not d.get("ok"):
-        return {"since": None, "at_least": False, "stale": False}
+        return {"since": None, "at_least": False, "stale": False, "h": None, "am_fp": None}
     h = hashlib.sha256(f"{round(d['bank_egp'])}|{round(d['bank_fx'])}".encode()).hexdigest()[:16]
     try:
         with open(TRACK_FILE, encoding="utf-8") as fh:
@@ -105,7 +109,20 @@ def track_balances(d):
     since = st.get("changed_on") or st.get("first_seen")
     at_least = not st.get("changed_on")
     stale = bool(since) and datetime.date.fromisoformat(since) < _prev_workday(today)
-    return {"since": since, "at_least": at_least, "stale": stale}
+    return {"since": since, "at_least": at_least, "stale": stale, "h": h,
+            "am_fp": st.get("am_fp") if st.get("am_date") == today.isoformat() else None}
+
+
+def record_morning(fresh):
+    """After the 08:00 email: remember which balances it showed (fingerprint only) so 15:00 knows if they changed."""
+    try:
+        with open(TRACK_FILE, encoding="utf-8") as fh:
+            st = json.load(fh)
+        st.update(am_fp=fresh.get("h"), am_date=cairo_now().date().isoformat())
+        with open(TRACK_FILE, "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
+    except (OSError, ValueError):
+        pass
 
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -385,7 +402,7 @@ def _column_chart(trend, maxh=98):
             f'<span class="lg">Net shown per column (M EGP)</span></div>')
 
 
-def render(d):
+def render(d, pm=False):
     if not d.get("ok"):
         return "<html><body><p>Cash position unavailable — could not read the treasury sheet.</p></body></html>"
 
@@ -404,6 +421,9 @@ def render(d):
                    f'once {esc(cur_label)} collections land in the sheet.</div>')
 
     fr = d.get("fresh") or {}
+    if pm:
+        pending = ('<div class="pending" style="color:#1f5fa8;background:#e8f0fb;border-color:#bcd3f0">🕒 <b>15:00 update</b> — the bank '
+                   'balances changed after this morning\'s 08:00 email. Figures below are as of now.</div>') + pending
     if fr.get("stale"):
         sd = datetime.date.fromisoformat(fr["since"])
         pending = (f'<div class="pending" style="color:#b3261e;background:#fdecea;border-color:#f3c2bd">⚠ <b>Bank balances have not '
@@ -602,16 +622,34 @@ def _mark_sent_today():
         pass
 
 
+def _pm_sent_today():
+    try:
+        with open(PM_MARKER, encoding="utf-8") as fh:
+            return fh.read().strip() == cairo_now().date().isoformat()
+    except OSError:
+        return False
+
+
+def _mark_pm_sent_today():
+    try:
+        with open(PM_MARKER, "w", encoding="utf-8") as fh:
+            fh.write(cairo_now().date().isoformat())
+    except OSError:
+        pass
+
+
 def main():
     dry = "--dry-run" in sys.argv
     force = "--force" in sys.argv
     recipients = [r.strip() for r in os.environ.get("CASH_RECIPIENTS", "").split(",") if r.strip()] \
         or DEFAULT_RECIPIENTS
+    base_recipients = list(recipients)
     alt = [r.strip() for r in os.environ.get("CASH_ALTDAY_RECIPIENTS", "").split(",") if r.strip()]
     if alt:
         on = alt_day_on(cairo_now().date())
         low = {a.lower() for a in alt}
-        recipients = [r for r in recipients if r.lower() not in low] + (alt if on else [])
+        base_recipients = [r for r in recipients if r.lower() not in low]
+        recipients = base_recipients + (alt if on else [])
         print(f"Every-other-day recipients ({len(alt)}): {'included' if on else 'left out'} today.")
 
     print("Pulling cash position…")
@@ -639,7 +677,21 @@ def main():
             print("Cairo day is Friday — skipping (no cash report on Fridays).")
             return 0
         if _already_sent_today():
-            print("Already sent today — skipping (dedupe).")
+            # 15:00 update: Sun–Thu, once, only if the bank balances changed after the morning email
+            fr = d.get("fresh") or {}
+            if cairo_now().hour < PM_HOUR_CAIRO or cairo_now().weekday() in WEEKEND or _pm_sent_today():
+                print("Already sent today — skipping (dedupe).")
+                return 0
+            if not fr.get("am_fp") or fr.get("am_fp") == fr.get("h"):
+                print("15:00 check: bank balances unchanged since the 08:00 email (or morning fingerprint unknown) — no update sent.")
+                return 0
+            pm_body = render(d, pm=True)
+            pm_subject = f"AHD Cash Position — 15:00 update — {cairo_now():%a %d %b}"
+            if not send_email(pm_subject, pm_body, base_recipients):
+                print("15:00 update send failed — NOT marking it sent, so a later run can retry.")
+                return 1
+            _mark_pm_sent_today()
+            print("15:00 update sent to", len(base_recipients), "recipient(s).")
             return 0
         hour = cairo_now().hour
         if not (SEND_HOUR_CAIRO <= hour < SEND_WINDOW_END_CAIRO):
@@ -653,6 +705,7 @@ def main():
         print("Send failed — NOT marking today as sent, so a later run can retry.")
         return 1
     _mark_sent_today()
+    record_morning(d.get("fresh") or {})
     return 0
 
 

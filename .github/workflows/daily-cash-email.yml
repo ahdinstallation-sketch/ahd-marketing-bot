@@ -36,6 +36,8 @@ on:
     - cron: "6 8 * * *"     # ~11:06  (fallback)
     - cron: "36 9 * * *"    # ~12:36  (fallback)
     - cron: "36 11 * * *"   # ~14:36  (fallback)
+    - cron: "6 12 * * *"    # ~15:06  15:00 update (sent only if bank balances changed since 08:00)
+    - cron: "36 12 * * *"   # ~15:36  15:00 update fallback
     - cron: "36 13 * * *"   # ~16:36  (last-resort, still same day)
 
 # A late-firing run must never overlap an earlier one of the same workflow —
@@ -62,6 +64,11 @@ jobs:
         with:
           path: .cash_sent_marker
           key: cash-sent-${{ env.CAIRO_DATE }}
+      - name: Restore 15:00-update marker
+        uses: actions/cache@v4
+        with:
+          path: .cash_pm_marker
+          key: cash-pm-${{ env.CAIRO_DATE }}
       - name: Restore bank-balance tracker
         # when the bank balances last changed (fingerprint + date only — public repo). Newest saved copy wins.
         uses: actions/cache/restore@v4
